@@ -1,0 +1,6 @@
+.env
+.env.local
+
+/api
+/core
+*.exe
