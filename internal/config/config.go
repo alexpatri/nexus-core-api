@@ -15,7 +15,7 @@ type DatabaseConfig struct {
 	Driver   string `env:"DRIVER" envDefault:"mongodb+srv"`
 	Host     string `env:"HOST"`
 	Port     string `env:"PORT" envDefault:"27017"`
-	Name     string `env:"NAME" envDefault:"dnd-api"`
+	Name     string `env:"NAME" envDefault:"core"`
 	User     string `env:"USER"`
 	Password string `env:"PASSWORD"`
 }
