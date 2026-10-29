@@ -2,112 +2,279 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"strings"
+	"time"
 
 	"rpg-nexus/api/core/internal/auth"
+	"rpg-nexus/api/core/internal/httperr"
 	"rpg-nexus/api/core/internal/models"
 	"rpg-nexus/api/core/internal/repository"
-	"rpg-nexus/api/core/internal/utils"
 
 	"github.com/gofiber/fiber/v3"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type UserRepository interface {
 	Insert(ctx context.Context, u models.User) error
 	FindByEmail(ctx context.Context, email string) (models.User, error)
+	FindByID(ctx context.Context, id primitive.ObjectID) (models.User, error)
+	UpdateName(ctx context.Context, id primitive.ObjectID, name string) (models.User, error)
+	UpdatePasswordHash(ctx context.Context, id primitive.ObjectID, hash string) error
+}
+
+type SessionRepository interface {
+	Insert(ctx context.Context, s models.Session) error
+	Delete(ctx context.Context, id primitive.ObjectID) error
+	DeleteByUser(ctx context.Context, userID primitive.ObjectID) error
+	DeleteByUserExcept(ctx context.Context, userID, keep primitive.ObjectID) error
 }
 
 type userService struct {
-	repo   UserRepository
-	secret string
+	users      UserRepository
+	sessions   SessionRepository
+	sessionTTL time.Duration
 }
 
-func NewUserService(repo UserRepository, secret string) *userService {
-	return &userService{repo: repo, secret: secret}
+func NewUserService(users UserRepository, sessions SessionRepository, sessionTTL time.Duration) *userService {
+	return &userService{users: users, sessions: sessions, sessionTTL: sessionTTL}
 }
 
 type userResponse struct {
-	Id    string `json:"id"`
+	ID    string `json:"id"`
 	Name  string `json:"name"`
 	Email string `json:"email"`
 }
 
 func toResponse(u models.User) userResponse {
-	return userResponse{
-		Id:    u.Id.Hex(),
-		Name:  u.Name,
-		Email: u.Email,
-	}
+	return userResponse{ID: u.ID.Hex(), Name: u.Name, Email: u.Email}
 }
 
-func (svc *userService) sessionResponse(u models.User) (fiber.Map, error) {
-	token, err := auth.GenerateToken(u.Id.Hex(), svc.secret)
-	if err != nil {
-		return nil, err
+func invalidInput(c fiber.Ctx, field string) error {
+	var params map[string]any
+	if field != "" {
+		params = map[string]any{"field": field}
 	}
-	return fiber.Map{
-		"token": token,
-		"user":  toResponse(u),
-	}, nil
+	return httperr.Send(c, fiber.StatusBadRequest, "auth.invalidInput", params)
 }
 
-func (svc *userService) CreateUserHandler(c fiber.Ctx) error {
-	user, err := models.NewUserFromJSON(c.Body())
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Body inválido"})
-	}
-
-	exists, err := svc.isEmailExists(c.Context(), user.Email)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Algo deu errado"})
-	}
-	if exists {
-		return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "Email já cadastrado. Utilize outro email ou faça login"})
-	}
-
-	if err := svc.repo.Insert(c.Context(), user); err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Algo deu errado"})
-	}
-
-	resp, err := svc.sessionResponse(user)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Erro ao gerar sessão"})
-	}
-	return c.Status(fiber.StatusCreated).JSON(resp)
+func invalidCredentials(c fiber.Ctx) error {
+	return httperr.Send(c, fiber.StatusUnauthorized, "auth.invalidCredentials", nil)
 }
 
-func (svc *userService) ValidateUserHandler(c fiber.Ctx) error {
-	input, err := models.ConvertJSONToUser(c.Body())
-	if err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Body inválido"})
+func weakPassword(c fiber.Ctx) error {
+	return httperr.Send(c, fiber.StatusBadRequest, "auth.weakPassword", nil)
+}
+
+// Em erro, devolve o campo com tipo errado, ou "" se o corpo nem é JSON.
+func decodeBody(c fiber.Ctx, v any) (string, bool) {
+	err := json.Unmarshal(c.Body(), v)
+	if err == nil {
+		return "", true
+	}
+	var typeErr *json.UnmarshalTypeError
+	if errors.As(err, &typeErr) {
+		return typeErr.Field, false
+	}
+	return "", false
+}
+
+func (svc *userService) startSession(c fiber.Ctx, status int, u models.User, deviceName string) error {
+	token := auth.NewToken()
+	now := time.Now()
+	s := models.Session{
+		ID:         primitive.NewObjectID(),
+		UserID:     u.ID,
+		TokenHash:  auth.HashToken(token),
+		DeviceName: strings.TrimSpace(deviceName),
+		CreatedAt:  now,
+		LastUsedAt: now,
+		ExpiresAt:  now.Add(svc.sessionTTL),
+	}
+	if err := svc.sessions.Insert(c.Context(), s); err != nil {
+		return err
+	}
+	return c.Status(status).JSON(fiber.Map{"token": token, "user": toResponse(u)})
+}
+
+func (svc *userService) RegisterHandler(c fiber.Ctx) error {
+	var in struct {
+		Name       string `json:"name"`
+		Email      string `json:"email"`
+		Password   string `json:"password"`
+		DeviceName string `json:"deviceName"`
+	}
+	if field, ok := decodeBody(c, &in); !ok {
+		return invalidInput(c, field)
 	}
 
-	stored, err := svc.repo.FindByEmail(c.Context(), input.Email)
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return invalidInput(c, "name")
+	}
+	email, ok := auth.NormalizeEmail(in.Email)
+	if !ok {
+		return invalidInput(c, "email")
+	}
+	if !auth.ValidPassword(in.Password) {
+		return weakPassword(c)
+	}
+
+	hash, err := auth.HashPassword(in.Password)
+	if err != nil {
+		return err
+	}
+	u := models.User{
+		ID:           primitive.NewObjectID(),
+		Email:        email,
+		Name:         name,
+		PasswordHash: hash,
+		CreatedAt:    time.Now(),
+	}
+	err = svc.users.Insert(c.Context(), u)
+	if errors.Is(err, repository.ErrDuplicate) {
+		return httperr.Send(c, fiber.StatusConflict, "auth.emailTaken", nil)
+	}
+	if err != nil {
+		return err
+	}
+
+	return svc.startSession(c, fiber.StatusCreated, u, in.DeviceName)
+}
+
+func (svc *userService) LoginHandler(c fiber.Ctx) error {
+	var in struct {
+		Email      string `json:"email"`
+		Password   string `json:"password"`
+		DeviceName string `json:"deviceName"`
+	}
+	if field, ok := decodeBody(c, &in); !ok {
+		return invalidInput(c, field)
+	}
+
+	email, ok := auth.NormalizeEmail(in.Email)
+	if !ok {
+		return invalidCredentials(c)
+	}
+	u, err := svc.users.FindByEmail(c.Context(), email)
 	if errors.Is(err, repository.ErrNotFound) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Email ou senha incorretos"})
+		return invalidCredentials(c)
 	}
 	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Algo deu errado"})
+		return err
+	}
+	if !auth.VerifyPassword(in.Password, u.PasswordHash) {
+		return invalidCredentials(c)
 	}
 
-	if !utils.VerifyPassword(input.Password, stored.Password) {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "Email ou senha incorretos"})
-	}
-
-	resp, err := svc.sessionResponse(stored)
-	if err != nil {
-		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": "Erro ao gerar sessão"})
-	}
-	return c.Status(fiber.StatusOK).JSON(resp)
+	return svc.startSession(c, fiber.StatusOK, u, in.DeviceName)
 }
 
-func (svc *userService) isEmailExists(ctx context.Context, email string) (bool, error) {
-	_, err := svc.repo.FindByEmail(ctx, email)
+func (svc *userService) LogoutHandler(c fiber.Ctx) error {
+	id, err := auth.SessionID(c)
+	if err != nil {
+		return auth.Unauthenticated(c)
+	}
+	if err := svc.sessions.Delete(c.Context(), id); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (svc *userService) LogoutAllHandler(c fiber.Ctx) error {
+	userID, err := ownerFromCtx(c)
+	if err != nil {
+		return auth.Unauthenticated(c)
+	}
+	if err := svc.sessions.DeleteByUser(c.Context(), userID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
+}
+
+func (svc *userService) currentUser(c fiber.Ctx) (models.User, error) {
+	userID, err := ownerFromCtx(c)
+	if err != nil {
+		return models.User{}, repository.ErrNotFound
+	}
+	return svc.users.FindByID(c.Context(), userID)
+}
+
+func (svc *userService) MeHandler(c fiber.Ctx) error {
+	u, err := svc.currentUser(c)
 	if errors.Is(err, repository.ErrNotFound) {
-		return false, nil
+		return auth.Unauthenticated(c)
 	}
 	if err != nil {
-		return false, err
+		return err
 	}
-	return true, nil
+	return c.JSON(toResponse(u))
+}
+
+func (svc *userService) UpdateMeHandler(c fiber.Ctx) error {
+	var in struct {
+		Name string `json:"name"`
+	}
+	if field, ok := decodeBody(c, &in); !ok {
+		return invalidInput(c, field)
+	}
+	name := strings.TrimSpace(in.Name)
+	if name == "" {
+		return invalidInput(c, "name")
+	}
+
+	userID, err := ownerFromCtx(c)
+	if err != nil {
+		return auth.Unauthenticated(c)
+	}
+	u, err := svc.users.UpdateName(c.Context(), userID, name)
+	if errors.Is(err, repository.ErrNotFound) {
+		return auth.Unauthenticated(c)
+	}
+	if err != nil {
+		return err
+	}
+	return c.JSON(toResponse(u))
+}
+
+func (svc *userService) ChangePasswordHandler(c fiber.Ctx) error {
+	var in struct {
+		CurrentPassword string `json:"currentPassword"`
+		NewPassword     string `json:"newPassword"`
+	}
+	if field, ok := decodeBody(c, &in); !ok {
+		return invalidInput(c, field)
+	}
+
+	u, err := svc.currentUser(c)
+	if errors.Is(err, repository.ErrNotFound) {
+		return auth.Unauthenticated(c)
+	}
+	if err != nil {
+		return err
+	}
+	// 403, e não 401: o app apaga o token ao receber 401.
+	if !auth.VerifyPassword(in.CurrentPassword, u.PasswordHash) {
+		return httperr.Send(c, fiber.StatusForbidden, "auth.wrongPassword", nil)
+	}
+	if !auth.ValidPassword(in.NewPassword) {
+		return weakPassword(c)
+	}
+
+	hash, err := auth.HashPassword(in.NewPassword)
+	if err != nil {
+		return err
+	}
+	if err := svc.users.UpdatePasswordHash(c.Context(), u.ID, hash); err != nil {
+		return err
+	}
+	sessionID, err := auth.SessionID(c)
+	if err != nil {
+		return auth.Unauthenticated(c)
+	}
+	if err := svc.sessions.DeleteByUserExcept(c.Context(), u.ID, sessionID); err != nil {
+		return err
+	}
+	return c.SendStatus(fiber.StatusNoContent)
 }

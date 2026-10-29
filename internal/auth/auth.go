@@ -1,57 +1,60 @@
 package auth
 
 import (
+	"context"
 	"errors"
+	"log"
 	"strings"
 	"time"
 
+	"rpg-nexus/api/core/internal/httperr"
+	"rpg-nexus/api/core/internal/models"
+	"rpg-nexus/api/core/internal/repository"
+
 	"github.com/gofiber/fiber/v3"
-	"github.com/golang-jwt/jwt/v5"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
-const userIDLocal = "userID"
+const (
+	userIDLocal    = "userID"
+	sessionIDLocal = "sessionID"
+	touchInterval  = 24 * time.Hour
+)
 
-type Claims struct {
-	jwt.RegisteredClaims
+type SessionStore interface {
+	FindActive(ctx context.Context, tokenHash string, now time.Time) (models.Session, error)
+	Touch(ctx context.Context, id primitive.ObjectID, now, expiresAt time.Time) error
 }
 
-func GenerateToken(userID, secret string) (string, error) {
-	claims := Claims{
-		RegisteredClaims: jwt.RegisteredClaims{
-			Subject:   userID,
-			ExpiresAt: jwt.NewNumericDate(time.Now().Add(24 * time.Hour)),
-			IssuedAt:  jwt.NewNumericDate(time.Now()),
-		},
-	}
-	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
-	return token.SignedString([]byte(secret))
+func Unauthenticated(c fiber.Ctx) error {
+	return httperr.Send(c, fiber.StatusUnauthorized, "auth.unauthenticated", nil)
 }
 
-func parseToken(tokenStr, secret string) (*Claims, error) {
-	claims := &Claims{}
-	token, err := jwt.ParseWithClaims(tokenStr, claims, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodHMAC); !ok {
-			return nil, errors.New("unexpected signing method")
-		}
-		return []byte(secret), nil
-	})
-	if err != nil || !token.Valid {
-		return nil, errors.New("invalid token")
-	}
-	return claims, nil
-}
-
-func Middleware(secret string) fiber.Handler {
+func Middleware(sessions SessionStore, ttl time.Duration) fiber.Handler {
 	return func(c fiber.Ctx) error {
-		h := c.Get("Authorization")
-		if !strings.HasPrefix(h, "Bearer ") {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "missing token"})
+		token, ok := strings.CutPrefix(c.Get(fiber.HeaderAuthorization), "Bearer ")
+		if !ok || token == "" {
+			return Unauthenticated(c)
 		}
-		claims, err := parseToken(strings.TrimPrefix(h, "Bearer "), secret)
+
+		now := time.Now()
+		s, err := sessions.FindActive(c.Context(), HashToken(token), now)
+		if errors.Is(err, repository.ErrNotFound) {
+			return Unauthenticated(c)
+		}
+		// Falha do banco não pode virar 401: o app apaga o token ao receber 401.
 		if err != nil {
-			return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "invalid token"})
+			return c.SendStatus(fiber.StatusInternalServerError)
 		}
-		c.Locals(userIDLocal, claims.Subject)
+
+		if now.Sub(s.LastUsedAt) > touchInterval {
+			if err := sessions.Touch(c.Context(), s.ID, now, now.Add(ttl)); err != nil {
+				log.Printf("auth: renovar sessão %s: %v", s.ID.Hex(), err)
+			}
+		}
+
+		c.Locals(userIDLocal, s.UserID.Hex())
+		c.Locals(sessionIDLocal, s.ID)
 		return c.Next()
 	}
 }
@@ -62,4 +65,12 @@ func UserID(c fiber.Ctx) (string, error) {
 		return "", errors.New("user not in context")
 	}
 	return raw, nil
+}
+
+func SessionID(c fiber.Ctx) (primitive.ObjectID, error) {
+	id, ok := c.Locals(sessionIDLocal).(primitive.ObjectID)
+	if !ok {
+		return primitive.NilObjectID, errors.New("session not in context")
+	}
+	return id, nil
 }

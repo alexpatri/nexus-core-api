@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 	"github.com/joho/godotenv"
@@ -38,13 +39,19 @@ type ServerConfig struct {
 }
 
 type AuthConfig struct {
-	Secret string `env:"SECRET,required"`
+	SessionTTL time.Duration `env:"SESSION_TTL" envDefault:"2160h"`
+}
+
+// O padrão é o servidor de dev do app; fora dele, CORS_ORIGINS precisa ser definida.
+type CORSConfig struct {
+	Origins []string `env:"ORIGINS" envDefault:"http://localhost:5173"`
 }
 
 type Config struct {
 	DB     DatabaseConfig `envPrefix:"DB_"`
 	Server ServerConfig   `envPrefix:"SERVER_"`
 	Auth   AuthConfig     `envPrefix:"AUTH_"`
+	CORS   CORSConfig     `envPrefix:"CORS_"`
 }
 
 func LoadConfig() *Config {
