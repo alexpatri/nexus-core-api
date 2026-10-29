@@ -6,6 +6,7 @@ import (
 	"rpg-nexus/api/core/internal/api"
 	"rpg-nexus/api/core/internal/config"
 	"rpg-nexus/api/core/internal/database"
+	"rpg-nexus/api/core/internal/rules"
 )
 
 func main() {
@@ -16,7 +17,12 @@ func main() {
 		log.Fatalf("falha ao conectar ao banco: %v", err)
 	}
 
-	app, err := api.NewApp(cfg, db)
+	registry, err := rules.NewRegistry()
+	if err != nil {
+		log.Fatalf("regras: %v", err)
+	}
+
+	app, err := api.NewApp(cfg, db, registry)
 	if err != nil {
 		log.Fatalf("falha ao iniciar a aplicação: %v", err)
 	}

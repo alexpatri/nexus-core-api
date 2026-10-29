@@ -2,7 +2,6 @@ package services
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"time"
@@ -52,11 +51,7 @@ func toResponse(u models.User) userResponse {
 }
 
 func invalidInput(c fiber.Ctx, field string) error {
-	var params map[string]any
-	if field != "" {
-		params = map[string]any{"field": field}
-	}
-	return httperr.Send(c, fiber.StatusBadRequest, "auth.invalidInput", params)
+	return inputError(c, "auth.invalidInput", field)
 }
 
 func invalidCredentials(c fiber.Ctx) error {
@@ -65,19 +60,6 @@ func invalidCredentials(c fiber.Ctx) error {
 
 func weakPassword(c fiber.Ctx) error {
 	return httperr.Send(c, fiber.StatusBadRequest, "auth.weakPassword", nil)
-}
-
-// Em erro, devolve o campo com tipo errado, ou "" se o corpo nem é JSON.
-func decodeBody(c fiber.Ctx, v any) (string, bool) {
-	err := json.Unmarshal(c.Body(), v)
-	if err == nil {
-		return "", true
-	}
-	var typeErr *json.UnmarshalTypeError
-	if errors.As(err, &typeErr) {
-		return typeErr.Field, false
-	}
-	return "", false
 }
 
 func (svc *userService) startSession(c fiber.Ctx, status int, u models.User, deviceName string) error {

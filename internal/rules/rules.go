@@ -30,7 +30,9 @@ type System interface {
 	Summarize(data json.RawMessage) (Summary, error)
 }
 
+// Title é o nome do personagem; o core o copia para characters.name a cada escrita.
 type Summary struct {
+	Title      string      `json:"title"`
 	Subtitle   string      `json:"subtitle"`
 	Highlights []Highlight `json:"highlights,omitempty"`
 	Progress   *Progress   `json:"progress,omitempty"`
