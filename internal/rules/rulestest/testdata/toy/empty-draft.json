@@ -1,0 +1,13 @@
+{
+  "name": "empty-draft",
+  "description": "Nada preenchido",
+  "schemaVersion": 1,
+  "data": {},
+  "expect": {
+    "lenient": [],
+    "strict": [
+      { "step": "concept", "path": "name", "code": "required" }
+    ],
+    "summary": { "subtitle": "" }
+  }
+}

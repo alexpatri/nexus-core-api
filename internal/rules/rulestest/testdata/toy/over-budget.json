@@ -1,0 +1,19 @@
+{
+  "name": "over-budget",
+  "description": "Pontos acima do orçamento",
+  "schemaVersion": 1,
+  "data": { "name": "Grok", "points": 12 },
+  "expect": {
+    "lenient": [],
+    "strict": [
+      {
+        "step": "points",
+        "path": "points",
+        "code": "budget.exceeded",
+        "params": { "budget": "points", "spent": 12, "total": 10 }
+      }
+    ],
+    "derived": { "budgets": { "points": { "spent": 12, "total": 10 } } },
+    "summary": { "subtitle": "Grok", "progress": { "step": 1 } }
+  }
+}
