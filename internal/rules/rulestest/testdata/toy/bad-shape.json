@@ -1,0 +1,9 @@
+{
+  "name": "bad-shape",
+  "description": "points com tipo errado",
+  "schemaVersion": 1,
+  "data": { "points": "muitos" },
+  "expect": {
+    "lenient": [{ "step": "points", "path": "points", "code": "shape.invalid" }]
+  }
+}
