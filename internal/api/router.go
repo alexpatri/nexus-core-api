@@ -11,6 +11,7 @@ import (
 	"rpg-nexus/api/core/internal/config"
 	"rpg-nexus/api/core/internal/httperr"
 	"rpg-nexus/api/core/internal/repository"
+	"rpg-nexus/api/core/internal/rules"
 	"rpg-nexus/api/core/internal/services"
 
 	"github.com/gofiber/fiber/v3"
@@ -19,11 +20,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
-func NewApp(cfg *config.Config, db *mongo.Database) (*fiber.App, error) {
+func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*fiber.App, error) {
 	userRepo := repository.NewUser(db)
 	sessionRepo := repository.NewSession(db)
 	charRepo := repository.NewCharacter(db)
-	campRepo := repository.NewCampaign(db)
 
 	ctx := context.Background()
 	if err := userRepo.EnsureIndexes(ctx); err != nil {
@@ -32,45 +32,42 @@ func NewApp(cfg *config.Config, db *mongo.Database) (*fiber.App, error) {
 	if err := sessionRepo.EnsureIndexes(ctx); err != nil {
 		return nil, err
 	}
+	if err := charRepo.EnsureIndexes(ctx); err != nil {
+		return nil, err
+	}
 
 	app := fiber.New(fiber.Config{ErrorHandler: errorHandler})
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  cfg.CORS.Origins,
-		ExposeHeaders: []string{fiber.HeaderRetryAfter},
+		ExposeHeaders: []string{fiber.HeaderRetryAfter, fiber.HeaderETag},
 	}))
 
 	userSvc := services.NewUserService(userRepo, sessionRepo, cfg.Auth.SessionTTL)
-	charSvc := services.NewCharacterService(charRepo)
-	campSvc := services.NewCampaignService(campRepo)
+	charSvc := services.NewCharacterService(charRepo, registry)
 
-	// rotas públicas
+	// Sessão por rota ou por prefixo, e não num grupo raiz: assim rota
+	// inexistente responde 404, e não 401.
+	session := auth.Middleware(sessionRepo, cfg.Auth.SessionTTL)
+
 	app.Post("/auth/register", rateLimit(5, ipKey), userSvc.RegisterHandler)
 	app.Post("/auth/login", rateLimit(10, ipKey), rateLimit(5, emailKey), userSvc.LoginHandler)
+	app.Post("/auth/logout", session, userSvc.LogoutHandler)
+	app.Post("/auth/logout-all", session, userSvc.LogoutAllHandler)
 
-	// rotas privadas (exigem sessão)
-	api := app.Group("", auth.Middleware(sessionRepo, cfg.Auth.SessionTTL))
+	me := app.Group("/me", session)
+	me.Get("", userSvc.MeHandler)
+	me.Patch("", userSvc.UpdateMeHandler)
+	me.Put("/password", userSvc.ChangePasswordHandler)
 
-	api.Post("/auth/logout", userSvc.LogoutHandler)
-	api.Post("/auth/logout-all", userSvc.LogoutAllHandler)
-	api.Get("/me", userSvc.MeHandler)
-	api.Patch("/me", userSvc.UpdateMeHandler)
-	api.Put("/me/password", userSvc.ChangePasswordHandler)
+	characters := app.Group("/characters", session)
+	characters.Get("", charSvc.ListCharactersHandler)
+	characters.Post("", charSvc.CreateCharacterHandler)
+	characters.Delete("/:id", charSvc.DeleteCharacterHandler)
 
-	api.Get("/characters", charSvc.GetCharactersHandler)
-
-	characterGroup := api.Group("/character")
-	characterGroup.Get("/:id", charSvc.GetCharacterHandler)
-	characterGroup.Post("/", charSvc.PostCharacterHandler)
-	characterGroup.Put("/:id", charSvc.PutCharacterHandler)
-	characterGroup.Delete("/:id", charSvc.DeleteCharacterHandler)
-
-	api.Get("/campaigns", campSvc.GetCampaignsHandler)
-
-	campaignGroup := api.Group("/campaign")
-	campaignGroup.Post("/", campSvc.CreateCampaignHandler)
-	campaignGroup.Post("/:id", campSvc.GetCampaignHandler)
-	campaignGroup.Put("/:id", campSvc.PutCampaignHandler)
-	campaignGroup.Delete("/:id", campSvc.DeleteCampaignHandler)
+	sheets := app.Group("/sheets", session)
+	sheets.Get("/:id", charSvc.GetSheetHandler)
+	sheets.Put("/:id", charSvc.PutSheetHandler)
+	sheets.Post("/:id/finalize", charSvc.FinalizeSheetHandler)
 
 	return app, nil
 }
