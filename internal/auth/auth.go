@@ -53,18 +53,18 @@ func Middleware(sessions SessionStore, ttl time.Duration) fiber.Handler {
 			}
 		}
 
-		c.Locals(userIDLocal, s.UserID.Hex())
+		c.Locals(userIDLocal, s.UserID)
 		c.Locals(sessionIDLocal, s.ID)
 		return c.Next()
 	}
 }
 
-func UserID(c fiber.Ctx) (string, error) {
-	raw, ok := c.Locals(userIDLocal).(string)
-	if !ok || raw == "" {
-		return "", errors.New("user not in context")
+func UserID(c fiber.Ctx) (primitive.ObjectID, error) {
+	id, ok := c.Locals(userIDLocal).(primitive.ObjectID)
+	if !ok {
+		return primitive.NilObjectID, errors.New("user not in context")
 	}
-	return raw, nil
+	return id, nil
 }
 
 func SessionID(c fiber.Ctx) (primitive.ObjectID, error) {

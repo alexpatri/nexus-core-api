@@ -1,4 +1,4 @@
-package services
+package handlers
 
 import (
 	"bytes"
@@ -27,13 +27,13 @@ type CharacterRepository interface {
 	Delete(ctx context.Context, owner, id primitive.ObjectID) error
 }
 
-type characterService struct {
+type characterHandler struct {
 	repo  CharacterRepository
 	rules *rules.Registry
 }
 
-func NewCharacterService(repo CharacterRepository, registry *rules.Registry) *characterService {
-	return &characterService{repo: repo, rules: registry}
+func NewCharacterHandler(repo CharacterRepository, registry *rules.Registry) *characterHandler {
+	return &characterHandler{repo: repo, rules: registry}
 }
 
 type sheetResponse struct {
@@ -83,8 +83,8 @@ func summarize(sys rules.System, data json.RawMessage, status string) (json.RawM
 	return raw, summary.Title, err
 }
 
-func (svc *characterService) CreateCharacterHandler(c fiber.Ctx) error {
-	owner, err := ownerFromCtx(c)
+func (svc *characterHandler) CreateCharacterHandler(c fiber.Ctx) error {
+	owner, err := auth.UserID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
 	}
@@ -94,7 +94,7 @@ func (svc *characterService) CreateCharacterHandler(c fiber.Ctx) error {
 		Data          json.RawMessage `json:"data"`
 	}
 	if field, ok := decodeBody(c, &in); !ok {
-		return inputError(c, "character.invalidInput", field)
+		return httperr.SendInput(c, "character.invalidInput", field)
 	}
 	sys, err := svc.rules.Get(in.System, in.SystemVersion)
 	if err != nil {
@@ -105,7 +105,7 @@ func (svc *characterService) CreateCharacterHandler(c fiber.Ctx) error {
 		data = json.RawMessage(`{}`)
 	}
 	if !isObject(data) {
-		return inputError(c, "character.invalidInput", "data")
+		return httperr.SendInput(c, "character.invalidInput", "data")
 	}
 	if v := sys.Validate(data, rules.Lenient); len(v) > 0 {
 		return lenientFailed(c, v)
@@ -147,8 +147,8 @@ func (svc *characterService) CreateCharacterHandler(c fiber.Ctx) error {
 	return c.Status(fiber.StatusCreated).JSON(fiber.Map{"character": character, "sheet": sheet})
 }
 
-func (svc *characterService) ListCharactersHandler(c fiber.Ctx) error {
-	owner, err := ownerFromCtx(c)
+func (svc *characterHandler) ListCharactersHandler(c fiber.Ctx) error {
+	owner, err := auth.UserID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
 	}
@@ -162,8 +162,8 @@ func (svc *characterService) ListCharactersHandler(c fiber.Ctx) error {
 	return c.JSON(items)
 }
 
-func (svc *characterService) DeleteCharacterHandler(c fiber.Ctx) error {
-	owner, err := ownerFromCtx(c)
+func (svc *characterHandler) DeleteCharacterHandler(c fiber.Ctx) error {
+	owner, err := auth.UserID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
 	}
@@ -182,8 +182,8 @@ func (svc *characterService) DeleteCharacterHandler(c fiber.Ctx) error {
 
 // load busca a ficha do usuário e a estratégia dela, já com data no formato
 // atual; a migração só é gravada na próxima escrita.
-func (svc *characterService) load(c fiber.Ctx) (models.Sheet, rules.System, error) {
-	owner, err := ownerFromCtx(c)
+func (svc *characterHandler) load(c fiber.Ctx) (models.Sheet, rules.System, error) {
+	owner, err := auth.UserID(c)
 	if err != nil {
 		return models.Sheet{}, nil, err
 	}
@@ -209,7 +209,7 @@ func (svc *characterService) load(c fiber.Ctx) (models.Sheet, rules.System, erro
 	return s, sys, nil
 }
 
-func (svc *characterService) loadOrFail(c fiber.Ctx) (models.Sheet, rules.System, bool, error) {
+func (svc *characterHandler) loadOrFail(c fiber.Ctx) (models.Sheet, rules.System, bool, error) {
 	s, sys, err := svc.load(c)
 	if errors.Is(err, repository.ErrNotFound) {
 		return s, sys, false, sheetNotFound(c)
@@ -220,7 +220,7 @@ func (svc *characterService) loadOrFail(c fiber.Ctx) (models.Sheet, rules.System
 	return s, sys, true, nil
 }
 
-func (svc *characterService) GetSheetHandler(c fiber.Ctx) error {
+func (svc *characterHandler) GetSheetHandler(c fiber.Ctx) error {
 	s, sys, ok, err := svc.loadOrFail(c)
 	if !ok {
 		return err
@@ -234,7 +234,7 @@ func (svc *characterService) GetSheetHandler(c fiber.Ctx) error {
 
 // PutSheetHandler grava o estado inteiro da ficha, rascunho ou pronta. Na
 // pronta, as regras do livro voltam como aviso e não bloqueiam.
-func (svc *characterService) PutSheetHandler(c fiber.Ctx) error {
+func (svc *characterHandler) PutSheetHandler(c fiber.Ctx) error {
 	expected, ok := parseIfMatch(c.Get(fiber.HeaderIfMatch))
 	if !ok {
 		return httperr.Send(c, fiber.StatusPreconditionRequired, "sheet.revisionRequired", nil)
@@ -243,10 +243,10 @@ func (svc *characterService) PutSheetHandler(c fiber.Ctx) error {
 		Data json.RawMessage `json:"data"`
 	}
 	if field, ok := decodeBody(c, &in); !ok {
-		return inputError(c, "sheet.invalidInput", field)
+		return httperr.SendInput(c, "sheet.invalidInput", field)
 	}
 	if !isObject(in.Data) {
-		return inputError(c, "sheet.invalidInput", "data")
+		return httperr.SendInput(c, "sheet.invalidInput", "data")
 	}
 
 	s, sys, ok, err := svc.loadOrFail(c)
@@ -279,7 +279,7 @@ func (svc *characterService) PutSheetHandler(c fiber.Ctx) error {
 	return sendSheet(c, fiber.StatusOK, s, warnings)
 }
 
-func (svc *characterService) FinalizeSheetHandler(c fiber.Ctx) error {
+func (svc *characterHandler) FinalizeSheetHandler(c fiber.Ctx) error {
 	s, sys, ok, err := svc.loadOrFail(c)
 	if !ok {
 		return err
@@ -325,7 +325,7 @@ func revisionConflict(c fiber.Ctx) error {
 }
 
 // update já responde 404 ou 409; ok diz se o chamador ainda deve responder.
-func (svc *characterService) update(c fiber.Ctx, s models.Sheet, expected int, name string) (bool, error) {
+func (svc *characterHandler) update(c fiber.Ctx, s models.Sheet, expected int, name string) (bool, error) {
 	err := svc.repo.UpdateSheet(c.Context(), s, expected, name)
 	switch {
 	case errors.Is(err, repository.ErrConflict):

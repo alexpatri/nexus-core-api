@@ -1,4 +1,4 @@
-package services
+package handlers
 
 import (
 	"context"
@@ -30,14 +30,14 @@ type SessionRepository interface {
 	DeleteByUserExcept(ctx context.Context, userID, keep primitive.ObjectID) error
 }
 
-type userService struct {
+type userHandler struct {
 	users      UserRepository
 	sessions   SessionRepository
 	sessionTTL time.Duration
 }
 
-func NewUserService(users UserRepository, sessions SessionRepository, sessionTTL time.Duration) *userService {
-	return &userService{users: users, sessions: sessions, sessionTTL: sessionTTL}
+func NewUserHandler(users UserRepository, sessions SessionRepository, sessionTTL time.Duration) *userHandler {
+	return &userHandler{users: users, sessions: sessions, sessionTTL: sessionTTL}
 }
 
 type userResponse struct {
@@ -51,7 +51,7 @@ func toResponse(u models.User) userResponse {
 }
 
 func invalidInput(c fiber.Ctx, field string) error {
-	return inputError(c, "auth.invalidInput", field)
+	return httperr.SendInput(c, "auth.invalidInput", field)
 }
 
 func invalidCredentials(c fiber.Ctx) error {
@@ -62,7 +62,7 @@ func weakPassword(c fiber.Ctx) error {
 	return httperr.Send(c, fiber.StatusBadRequest, "auth.weakPassword", nil)
 }
 
-func (svc *userService) startSession(c fiber.Ctx, status int, u models.User, deviceName string) error {
+func (svc *userHandler) startSession(c fiber.Ctx, status int, u models.User, deviceName string) error {
 	token := auth.NewToken()
 	now := time.Now()
 	s := models.Session{
@@ -80,7 +80,7 @@ func (svc *userService) startSession(c fiber.Ctx, status int, u models.User, dev
 	return c.Status(status).JSON(fiber.Map{"token": token, "user": toResponse(u)})
 }
 
-func (svc *userService) RegisterHandler(c fiber.Ctx) error {
+func (svc *userHandler) RegisterHandler(c fiber.Ctx) error {
 	var in struct {
 		Name       string `json:"name"`
 		Email      string `json:"email"`
@@ -125,7 +125,7 @@ func (svc *userService) RegisterHandler(c fiber.Ctx) error {
 	return svc.startSession(c, fiber.StatusCreated, u, in.DeviceName)
 }
 
-func (svc *userService) LoginHandler(c fiber.Ctx) error {
+func (svc *userHandler) LoginHandler(c fiber.Ctx) error {
 	var in struct {
 		Email      string `json:"email"`
 		Password   string `json:"password"`
@@ -153,7 +153,7 @@ func (svc *userService) LoginHandler(c fiber.Ctx) error {
 	return svc.startSession(c, fiber.StatusOK, u, in.DeviceName)
 }
 
-func (svc *userService) LogoutHandler(c fiber.Ctx) error {
+func (svc *userHandler) LogoutHandler(c fiber.Ctx) error {
 	id, err := auth.SessionID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
@@ -164,8 +164,8 @@ func (svc *userService) LogoutHandler(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (svc *userService) LogoutAllHandler(c fiber.Ctx) error {
-	userID, err := ownerFromCtx(c)
+func (svc *userHandler) LogoutAllHandler(c fiber.Ctx) error {
+	userID, err := auth.UserID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
 	}
@@ -175,15 +175,15 @@ func (svc *userService) LogoutAllHandler(c fiber.Ctx) error {
 	return c.SendStatus(fiber.StatusNoContent)
 }
 
-func (svc *userService) currentUser(c fiber.Ctx) (models.User, error) {
-	userID, err := ownerFromCtx(c)
+func (svc *userHandler) currentUser(c fiber.Ctx) (models.User, error) {
+	userID, err := auth.UserID(c)
 	if err != nil {
 		return models.User{}, repository.ErrNotFound
 	}
 	return svc.users.FindByID(c.Context(), userID)
 }
 
-func (svc *userService) MeHandler(c fiber.Ctx) error {
+func (svc *userHandler) MeHandler(c fiber.Ctx) error {
 	u, err := svc.currentUser(c)
 	if errors.Is(err, repository.ErrNotFound) {
 		return auth.Unauthenticated(c)
@@ -194,7 +194,7 @@ func (svc *userService) MeHandler(c fiber.Ctx) error {
 	return c.JSON(toResponse(u))
 }
 
-func (svc *userService) UpdateMeHandler(c fiber.Ctx) error {
+func (svc *userHandler) UpdateMeHandler(c fiber.Ctx) error {
 	var in struct {
 		Name string `json:"name"`
 	}
@@ -206,7 +206,7 @@ func (svc *userService) UpdateMeHandler(c fiber.Ctx) error {
 		return invalidInput(c, "name")
 	}
 
-	userID, err := ownerFromCtx(c)
+	userID, err := auth.UserID(c)
 	if err != nil {
 		return auth.Unauthenticated(c)
 	}
@@ -220,7 +220,7 @@ func (svc *userService) UpdateMeHandler(c fiber.Ctx) error {
 	return c.JSON(toResponse(u))
 }
 
-func (svc *userService) ChangePasswordHandler(c fiber.Ctx) error {
+func (svc *userHandler) ChangePasswordHandler(c fiber.Ctx) error {
 	var in struct {
 		CurrentPassword string `json:"currentPassword"`
 		NewPassword     string `json:"newPassword"`

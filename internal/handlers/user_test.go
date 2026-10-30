@@ -1,4 +1,4 @@
-package services
+package handlers
 
 import (
 	"context"
@@ -140,7 +140,7 @@ const ttl = 90 * 24 * time.Hour
 func newTestApp() (*fiber.App, *fakeSessions) {
 	users := &fakeUsers{byID: map[primitive.ObjectID]models.User{}}
 	sessions := &fakeSessions{byID: map[primitive.ObjectID]models.Session{}}
-	svc := NewUserService(users, sessions, ttl)
+	svc := NewUserHandler(users, sessions, ttl)
 
 	app := fiber.New()
 	app.Post("/auth/register", svc.RegisterHandler)

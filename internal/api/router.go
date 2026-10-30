@@ -9,10 +9,10 @@ import (
 
 	"rpg-nexus/api/core/internal/auth"
 	"rpg-nexus/api/core/internal/config"
+	"rpg-nexus/api/core/internal/handlers"
 	"rpg-nexus/api/core/internal/httperr"
 	"rpg-nexus/api/core/internal/repository"
 	"rpg-nexus/api/core/internal/rules"
-	"rpg-nexus/api/core/internal/services"
 
 	"github.com/gofiber/fiber/v3"
 	"github.com/gofiber/fiber/v3/middleware/cors"
@@ -42,8 +42,8 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 		ExposeHeaders: []string{fiber.HeaderRetryAfter, fiber.HeaderETag},
 	}))
 
-	userSvc := services.NewUserService(userRepo, sessionRepo, cfg.Auth.SessionTTL)
-	charSvc := services.NewCharacterService(charRepo, registry)
+	userSvc := handlers.NewUserHandler(userRepo, sessionRepo, cfg.Auth.SessionTTL)
+	charSvc := handlers.NewCharacterHandler(charRepo, registry)
 
 	// Sessão por rota ou por prefixo, e não num grupo raiz: assim rota
 	// inexistente responde 404, e não 401.

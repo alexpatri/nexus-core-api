@@ -1,4 +1,4 @@
-package services
+package handlers
 
 import (
 	"context"
@@ -169,7 +169,7 @@ func newCharEnv(t *testing.T, systems ...rules.System) charEnv {
 		return token
 	}
 
-	svc := NewCharacterService(repo, registry)
+	svc := NewCharacterHandler(repo, registry)
 	app := fiber.New()
 	chars := app.Group("/characters", auth.Middleware(sessions, time.Hour))
 	chars.Get("", svc.ListCharactersHandler)
