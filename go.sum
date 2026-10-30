@@ -1,3 +1,5 @@
+github.com/alexpatri/nexus-systems-api v0.1.0 h1:WFkbW0LRaPUM91NwoWqKr9X5lNDODE173CenNpH6Fgc=
+github.com/alexpatri/nexus-systems-api v0.1.0/go.mod h1:CMYXxWZ8udFarz8jEdhU+QZlxqPJ6C6BVh35P/bfjew=
 github.com/andybalholm/brotli v1.2.1 h1:R+f5xP285VArJDRgowrfb9DqL18yVK0gKAW/F+eTWro=
 github.com/andybalholm/brotli v1.2.1/go.mod h1:rzTDkvFWvIrjDXZHkuS16NPggd91W3kUSvPlQ1pLaKY=
 github.com/caarlos0/env/v11 v11.4.1 h1:fYwH0sWEsBSMPG7t4e/PEfTFzrWrpjyygXyUnWiSwEw=
