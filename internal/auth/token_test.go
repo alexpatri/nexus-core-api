@@ -23,6 +23,9 @@ func TestNormalizeEmail(t *testing.T) {
 		" Alex@Exemplo.COM ": "alex@exemplo.com",
 		"alex@exemplo.com":   "alex@exemplo.com",
 		"Alex <a@b.com>":     "",
+		"alex@gmail":         "",
+		"alex@gmail.c":       "",
+		"alex@mail.com.br":   "alex@mail.com.br",
 		"sem-arroba":         "",
 		"":                   "",
 	}

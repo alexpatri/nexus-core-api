@@ -58,8 +58,8 @@ func invalidCredentials(c fiber.Ctx) error {
 	return httperr.Send(c, fiber.StatusUnauthorized, "auth.invalidCredentials", nil)
 }
 
-func weakPassword(c fiber.Ctx) error {
-	return httperr.Send(c, fiber.StatusBadRequest, "auth.weakPassword", nil)
+func weakPassword(c fiber.Ctx, missing []string) error {
+	return httperr.Send(c, fiber.StatusBadRequest, "auth.weakPassword", map[string]any{"missing": missing})
 }
 
 func (svc *userHandler) startSession(c fiber.Ctx, status int, u models.User, deviceName string) error {
@@ -99,8 +99,8 @@ func (svc *userHandler) RegisterHandler(c fiber.Ctx) error {
 	if !ok {
 		return invalidInput(c, "email")
 	}
-	if !auth.ValidPassword(in.Password) {
-		return weakPassword(c)
+	if missing := auth.MissingPasswordRules(in.Password); len(missing) > 0 {
+		return weakPassword(c, missing)
 	}
 
 	hash, err := auth.HashPassword(in.Password)
@@ -240,8 +240,8 @@ func (svc *userHandler) ChangePasswordHandler(c fiber.Ctx) error {
 	if !auth.VerifyPassword(in.CurrentPassword, u.PasswordHash) {
 		return httperr.Send(c, fiber.StatusForbidden, "auth.wrongPassword", nil)
 	}
-	if !auth.ValidPassword(in.NewPassword) {
-		return weakPassword(c)
+	if missing := auth.MissingPasswordRules(in.NewPassword); len(missing) > 0 {
+		return weakPassword(c, missing)
 	}
 
 	hash, err := auth.HashPassword(in.NewPassword)
