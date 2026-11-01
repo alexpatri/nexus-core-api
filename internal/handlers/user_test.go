@@ -185,7 +185,7 @@ func errCode(r result) string {
 func register(t *testing.T, app *fiber.App, email string) string {
 	t.Helper()
 	r := do(t, app, http.MethodPost, "/auth/register", "",
-		`{"name":"Alex","email":"`+email+`","password":"senha-forte"}`)
+		`{"name":"Alex","email":"`+email+`","password":"Senha-Forte1"}`)
 	if r.status != fiber.StatusCreated {
 		t.Fatalf("register: status %d, corpo %v", r.status, r.body)
 	}
@@ -196,7 +196,7 @@ func TestRegister(t *testing.T) {
 	app, _ := newTestApp()
 
 	r := do(t, app, http.MethodPost, "/auth/register", "",
-		`{"name":" Alex ","email":" Alex@Exemplo.com ","password":"senha-forte"}`)
+		`{"name":" Alex ","email":" Alex@Exemplo.com ","password":"Senha-Forte1"}`)
 	if r.status != fiber.StatusCreated {
 		t.Fatalf("status %d, corpo %v", r.status, r.body)
 	}
@@ -216,12 +216,13 @@ func TestRegister(t *testing.T) {
 		status           int
 		field            string
 	}{
-		{"e-mail repetido", `{"name":"Outro","email":"ALEX@exemplo.com","password":"senha-forte"}`, "auth.emailTaken", 409, ""},
+		{"e-mail repetido", `{"name":"Outro","email":"ALEX@exemplo.com","password":"Senha-Forte1"}`, "auth.emailTaken", 409, ""},
 		{"senha curta", `{"name":"Alex","email":"b@exemplo.com","password":"curta"}`, "auth.weakPassword", 400, ""},
 		{"senha longa", `{"name":"Alex","email":"b@exemplo.com","password":"` + strings.Repeat("a", 73) + `"}`, "auth.weakPassword", 400, ""},
-		{"sem nome", `{"name":"  ","email":"b@exemplo.com","password":"senha-forte"}`, "auth.invalidInput", 400, "name"},
-		{"e-mail inválido", `{"name":"Alex","email":"não é e-mail","password":"senha-forte"}`, "auth.invalidInput", 400, "email"},
-		{"tipo errado", `{"name":1,"email":"b@exemplo.com","password":"senha-forte"}`, "auth.invalidInput", 400, "name"},
+		{"sem nome", `{"name":"  ","email":"b@exemplo.com","password":"Senha-Forte1"}`, "auth.invalidInput", 400, "name"},
+		{"e-mail inválido", `{"name":"Alex","email":"não é e-mail","password":"Senha-Forte1"}`, "auth.invalidInput", 400, "email"},
+		{"domínio sem ponto", `{"name":"Alex","email":"alex@gmail","password":"Senha-Forte1"}`, "auth.invalidInput", 400, "email"},
+		{"tipo errado", `{"name":1,"email":"b@exemplo.com","password":"Senha-Forte1"}`, "auth.invalidInput", 400, "name"},
 		{"não é JSON", `nada`, "auth.invalidInput", 400, ""},
 	}
 	for _, tc := range cases {
@@ -238,11 +239,21 @@ func TestRegister(t *testing.T) {
 	}
 }
 
+func TestRegisterReportsMissingRules(t *testing.T) {
+	app, _ := newTestApp()
+	r := do(t, app, http.MethodPost, "/auth/register", "", `{"name":"Alex","email":"b@exemplo.com","password":"12345678"}`)
+	params, _ := r.body["error"].(map[string]any)["params"].(map[string]any)
+	got, _ := json.Marshal(params["missing"])
+	if errCode(r) != "auth.weakPassword" || string(got) != `["upper","lower","special"]` {
+		t.Errorf("got %q, missing %s", errCode(r), got)
+	}
+}
+
 func TestLogin(t *testing.T) {
 	app, _ := newTestApp()
 	register(t, app, "alex@exemplo.com")
 
-	r := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"ALEX@exemplo.com ","password":"senha-forte"}`)
+	r := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"ALEX@exemplo.com ","password":"Senha-Forte1"}`)
 	if r.status != fiber.StatusOK {
 		t.Fatalf("status %d, corpo %v", r.status, r.body)
 	}
@@ -252,7 +263,7 @@ func TestLogin(t *testing.T) {
 
 	for _, body := range []string{
 		`{"email":"alex@exemplo.com","password":"errada-errada"}`,
-		`{"email":"ninguem@exemplo.com","password":"senha-forte"}`,
+		`{"email":"ninguem@exemplo.com","password":"Senha-Forte1"}`,
 	} {
 		r := do(t, app, http.MethodPost, "/auth/login", "", body)
 		if r.status != fiber.StatusUnauthorized || errCode(r) != "auth.invalidCredentials" {
@@ -299,7 +310,7 @@ func TestLogout(t *testing.T) {
 	app, _ := newTestApp()
 	a := register(t, app, "alex@exemplo.com")
 	login := func() string {
-		return do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"senha-forte"}`).body["token"].(string)
+		return do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"Senha-Forte1"}`).body["token"].(string)
 	}
 	b, c := login(), login()
 
@@ -339,18 +350,18 @@ func TestUpdateMe(t *testing.T) {
 func TestChangePassword(t *testing.T) {
 	app, _ := newTestApp()
 	current := register(t, app, "alex@exemplo.com")
-	other := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"senha-forte"}`).body["token"].(string)
+	other := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"Senha-Forte1"}`).body["token"].(string)
 
-	r := do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"errada-errada","newPassword":"senha-nova"}`)
+	r := do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"errada-errada","newPassword":"Senha-Nova2"}`)
 	if r.status != fiber.StatusForbidden || errCode(r) != "auth.wrongPassword" {
 		t.Fatalf("senha atual errada: got %d %q", r.status, errCode(r))
 	}
-	r = do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"senha-forte","newPassword":"curta"}`)
+	r = do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"Senha-Forte1","newPassword":"curta"}`)
 	if errCode(r) != "auth.weakPassword" {
 		t.Fatalf("senha nova curta: got %d %q", r.status, errCode(r))
 	}
 
-	r = do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"senha-forte","newPassword":"senha-nova"}`)
+	r = do(t, app, http.MethodPut, "/me/password", current, `{"currentPassword":"Senha-Forte1","newPassword":"Senha-Nova2"}`)
 	if r.status != fiber.StatusNoContent {
 		t.Fatalf("status %d, corpo %v", r.status, r.body)
 	}
@@ -360,7 +371,7 @@ func TestChangePassword(t *testing.T) {
 	if do(t, app, http.MethodGet, "/me", other, "").status != fiber.StatusUnauthorized {
 		t.Error("a outra sessão continua")
 	}
-	if r := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"senha-nova"}`); r.status != fiber.StatusOK {
+	if r := do(t, app, http.MethodPost, "/auth/login", "", `{"email":"alex@exemplo.com","password":"Senha-Nova2"}`); r.status != fiber.StatusOK {
 		t.Errorf("login com a senha nova: status %d", r.status)
 	}
 }

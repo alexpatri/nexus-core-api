@@ -19,6 +19,9 @@ type DatabaseConfig struct {
 	Name     string `env:"NAME" envDefault:"core"`
 	User     string `env:"USER"`
 	Password string `env:"PASSWORD"`
+	// Query string da URI, como directConnection=true para o Mongo do compose
+	// acessado de fora da rede do Docker.
+	Params string `env:"PARAMS"`
 }
 
 func (d DatabaseConfig) URI() string {
@@ -27,11 +30,14 @@ func (d DatabaseConfig) URI() string {
 		host = fmt.Sprintf("%s:%s", d.Host, d.Port)
 	}
 
+	uri := fmt.Sprintf("%s://%s/", d.Driver, host)
 	if d.User != "" {
-		return fmt.Sprintf("%s://%s:%s@%s/", d.Driver, d.User, d.Password, host)
+		uri = fmt.Sprintf("%s://%s:%s@%s/", d.Driver, d.User, d.Password, host)
 	}
-
-	return fmt.Sprintf("%s://%s/", d.Driver, host)
+	if d.Params != "" {
+		uri += "?" + d.Params
+	}
+	return uri
 }
 
 type ServerConfig struct {

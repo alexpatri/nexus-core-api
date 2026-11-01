@@ -1,5 +1,10 @@
-# Mongo de dev como replica set de um nó: as transações do core exigem replica set.
-# Para usar: DB_DRIVER=mongodb DB_HOST=localhost, sem DB_USER.
+# Ambiente de dev: Mongo como replica set de um nó (as transações do core
+# exigem replica set) e o core já ligado a ele, em http://localhost:8080.
+#
+# O replica set se anuncia como mongo:27017, nome que só resolve dentro da rede
+# do compose. De fora (go run, testes de integração, mongosh), conecte com
+# directConnection=true, que vai direto ao nó:
+#   DB_DRIVER=mongodb DB_HOST=localhost DB_PARAMS=directConnection=true
 services:
   mongo:
     image: mongo:7
@@ -9,9 +14,32 @@ services:
     volumes:
       - mongo:/data/db
     healthcheck:
-      test: mongosh --quiet --eval "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'localhost:27017' }] }).ok }"
+      # Na primeira subida o rs.status() falha e o rs.initiate() cria o replica set.
+      test:
+        - CMD
+        - mongosh
+        - --quiet
+        - --eval
+        - "try { rs.status().ok } catch (e) { rs.initiate({ _id: 'rs0', members: [{ _id: 0, host: 'mongo:27017' }] }).ok }"
       interval: 5s
       retries: 10
+
+  core:
+    build: .
+    ports:
+      - "8080:8080"
+    environment:
+      DB_DRIVER: mongodb
+      DB_HOST: mongo
+      DB_PORT: "27017"
+      DB_USER: ""
+      DB_PASSWORD: ""
+      DB_NAME: core
+      SERVER_PORT: "8080"
+      CORS_ORIGINS: http://localhost:5173
+    depends_on:
+      mongo:
+        condition: service_healthy
 
 volumes:
   mongo:
