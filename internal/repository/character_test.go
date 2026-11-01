@@ -18,7 +18,7 @@ import (
 )
 
 // Precisa de um Mongo em replica set, como o do docker-compose:
-// NEXUS_TEST_MONGO_URI=mongodb://localhost:27017 go test ./internal/repository
+// NEXUS_TEST_MONGO_URI="mongodb://localhost:27017/?directConnection=true" go test ./internal/repository
 func testDB(t *testing.T) *mongo.Database {
 	t.Helper()
 	uri := os.Getenv("NEXUS_TEST_MONGO_URI")
