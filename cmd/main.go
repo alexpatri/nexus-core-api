@@ -3,10 +3,13 @@ package main
 import (
 	"log"
 
+	"github.com/alexpatri/nexus-systems-api/data"
+
 	"rpg-nexus/api/core/internal/api"
 	"rpg-nexus/api/core/internal/config"
 	"rpg-nexus/api/core/internal/database"
 	"rpg-nexus/api/core/internal/rules"
+	"rpg-nexus/api/core/internal/rules/shadowrun"
 )
 
 func main() {
@@ -17,7 +20,11 @@ func main() {
 		log.Fatalf("falha ao conectar ao banco: %v", err)
 	}
 
-	registry, err := rules.NewRegistry()
+	sr, err := shadowrun.New(data.Systems())
+	if err != nil {
+		log.Fatalf("regras: %v", err)
+	}
+	registry, err := rules.NewRegistry(sr)
 	if err != nil {
 		log.Fatalf("regras: %v", err)
 	}
