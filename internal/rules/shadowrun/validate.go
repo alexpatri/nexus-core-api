@@ -20,6 +20,7 @@ type sheet struct {
 	Attributes map[string]buy    `json:"attributes"`
 	Qualities  []qualityItem     `json:"qualities"`
 	Skills     skillsData        `json:"skills"`
+	Magic      magicData         `json:"magic"`
 }
 
 type qualityItem struct {
@@ -52,6 +53,11 @@ func stepOf(path string) string {
 	case (strings.HasPrefix(path, "attributes.") || strings.HasPrefix(path, "skills.")) &&
 		strings.HasSuffix(path, ".karma"):
 		return "karma"
+	case strings.HasPrefix(path, "magic.spirits"), strings.HasPrefix(path, "magic.sprites"),
+		strings.HasPrefix(path, "magic.powerPointsKarma"):
+		return "karma"
+	case strings.HasPrefix(path, "magic"):
+		return "magic"
 	case strings.HasPrefix(path, "qualities"):
 		return "qualities"
 	case strings.HasPrefix(path, "skills"):
@@ -207,6 +213,113 @@ func (s *System) lenientQualities(path string, v any, vs *[]rules.Violation, key
 	})
 }
 
+func idList(path string, v any, vs *[]rules.Violation, catalog string, known []string) {
+	xs, ok := v.([]any)
+	if !ok {
+		*vs = append(*vs, shape(path, "array"))
+		return
+	}
+	for _, x := range xs {
+		id, ok := x.(string)
+		switch {
+		case !ok:
+			*vs = append(*vs, shape(path, "string"))
+		case !slices.Contains(known, id):
+			*vs = append(*vs, unknownID(path, catalog, id))
+		}
+	}
+}
+
+func (s *System) lenientMagic(path string, v any, vs *[]rules.Violation, keys map[string]bool) {
+	object(path, v, vs, func(p, key string, v any) bool {
+		switch key {
+		case "awakening":
+			if id, ok := v.(string); !ok {
+				*vs = append(*vs, shape(p, "string"))
+			} else if _, known := s.awakenings[id]; !known {
+				*vs = append(*vs, unknownID(p, "awakenings", id))
+			}
+		case "tradition":
+			if id, ok := v.(string); !ok {
+				*vs = append(*vs, shape(p, "string"))
+			} else if !slices.Contains(s.magicIDs["traditions"], id) {
+				*vs = append(*vs, unknownID(p, "traditions", id))
+			}
+		case "aspect", "mentorAdvantage":
+			allowed := aspects
+			if key == "mentorAdvantage" {
+				allowed = mentorAdvantages
+			}
+			if a, _ := v.(string); !slices.Contains(allowed, a) {
+				*vs = append(*vs, shape(p, key))
+			}
+		case "freeSkills":
+			idList(p, v, vs, "skills", sortedKeys(s.skills))
+		case "freeSkillGroups":
+			idList(p, v, vs, "skillGroups", sortedKeys(s.groups))
+		case "complexForms":
+			idList(p, v, vs, "complexForms", s.magicIDs["complexForms"])
+		case "formulas":
+			object(p, v, vs, func(p, group string, v any) bool {
+				if group != "spells" && group != "rituals" && group != "preparations" {
+					return false
+				}
+				idList(p, v, vs, group, s.magicIDs[group])
+				return true
+			})
+		case "powerPointsKarma":
+			expectInteger(p, v, vs)
+		case "powers":
+			list(p, v, vs, keys, func(path string, m map[string]any) {
+				object(path, m, vs, func(p, key string, v any) bool {
+					switch key {
+					case "key", "parameter":
+						expectString(p, v, vs)
+					case "id":
+						if id, ok := v.(string); !ok {
+							*vs = append(*vs, shape(p, "string"))
+						} else if _, known := s.powers[id]; !known {
+							*vs = append(*vs, unknownID(p, "adeptPowers", id))
+						}
+					case "rating":
+						expectInteger(p, v, vs)
+					default:
+						return false
+					}
+					return true
+				})
+			})
+		case "spirits", "sprites":
+			catalog, count := "spiritTypes", "services"
+			if key == "sprites" {
+				catalog, count = "spriteTypes", "tasks"
+			}
+			list(p, v, vs, keys, func(path string, m map[string]any) {
+				object(path, m, vs, func(p, key string, v any) bool {
+					switch key {
+					case "key":
+						expectString(p, v, vs)
+					case "type":
+						if id, ok := v.(string); !ok {
+							*vs = append(*vs, shape(p, "string"))
+						} else if !slices.Contains(s.magicIDs[catalog], id) {
+							*vs = append(*vs, unknownID(p, catalog, id))
+						}
+					case count:
+						expectInteger(p, v, vs)
+					default:
+						return false
+					}
+					return true
+				})
+			})
+		default:
+			return false
+		}
+		return true
+	})
+}
+
 // skillField confere pontos, carma e especialização, comuns a todo tipo de perícia.
 func skillField(p, key string, v any, vs *[]rules.Violation) bool {
 	switch key {
@@ -314,6 +427,8 @@ func (s *System) lenient(data json.RawMessage) ([]rules.Violation, *sheet) {
 	keys := map[string]bool{}
 	object("", root, &vs, func(path, key string, v any) bool {
 		switch key {
+		case "magic":
+			s.lenientMagic(path, v, &vs, keys)
 		case "qualities":
 			s.lenientQualities(path, v, &vs, keys)
 		case "skills":
@@ -433,8 +548,17 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 	}
 
 	for _, a := range []string{"mag", "res"} {
-		if b := d.Attributes[a]; b.Points+b.Karma > 0 {
-			vs = append(vs, violation(layer(a, b), "attributes.notAllowed", map[string]any{"attribute": a}))
+		b := d.Attributes[a]
+		if _, awakened := s.specialBase(d, a); !awakened {
+			if b.Points+b.Karma > 0 {
+				vs = append(vs, violation(layer(a, b), "attributes.notAllowed", map[string]any{"attribute": a}))
+			}
+			continue
+		}
+		limit := s.mech.Creation.SpecialAttributeMax[a] + c.effects.attrMax[a]
+		if v := c.natural[a]; v > limit {
+			vs = append(vs, violation(layer(a, b), "attributes.aboveMax",
+				map[string]any{"attribute": a, "value": v, "max": limit}))
 		}
 	}
 	if m, ok := s.metatypes[d.Metatype]; ok {
@@ -455,10 +579,15 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 		}
 	}
 
+	vs = append(vs, s.strictMagic(d, c)...)
 	vs = append(vs, s.strictQualities(d, c)...)
 	vs = append(vs, s.strictSkills(d, c)...)
 
 	for _, id := range sortedKeys(c.budgets) {
+		// Fórmulas e formas além das gratuitas são compradas com carma.
+		if id == "formulas" || id == "complexForms" {
+			continue
+		}
 		if b := c.budgets[id]; b.Spent > b.Total {
 			vs = append(vs, violation("budgets."+id, "budget.exceeded",
 				map[string]any{"budget": id, "total": b.Total, "spent": b.Spent}))

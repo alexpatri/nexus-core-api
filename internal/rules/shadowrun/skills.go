@@ -9,6 +9,7 @@ type skill struct {
 	ID         string `json:"id"`
 	Attribute  string `json:"attribute"`
 	Group      string `json:"group"`
+	Category   string `json:"category"`
 	Restricted bool   `json:"restricted"`
 }
 
@@ -66,9 +67,10 @@ func (s *System) groupRating(d *sheet, skillID string) int {
 	return int(g.Points + g.Karma)
 }
 
-// activeRatings é o nível de cada perícia ativa: grupo comprado + pontos + carma.
+// activeRatings é o nível de cada perícia ativa: dado pela prioridade + grupo
+// comprado + pontos + carma.
 func (s *System) activeRatings(d *sheet) map[string]int {
-	r := map[string]int{}
+	r := s.freeRatings(d)
 	for g, b := range d.Skills.Groups {
 		for _, id := range s.groups[g] {
 			r[id] += int(b.Points + b.Karma)
@@ -95,12 +97,13 @@ func (s *System) skillCosts(d *sheet, c *calc, eval func(any, expr.Env) int) (po
 		}
 		return total
 	}
+	free := s.freeRatings(d)
 	spec := func(b skillBuy) int {
 		return paidWith(b.Specialization, "karma") * eval(costs.Specialization, nil)
 	}
 	for id, b := range d.Skills.Active {
 		points += int(b.Points) + paidWith(b.Specialization, "points")*s.mech.Creation.Skills.SpecializationCost
-		karma += steps(costs.ActiveSkill, s.groupRating(d, id)+int(b.Points), int(b.Karma)) + spec(b)
+		karma += steps(costs.ActiveSkill, free[id]+s.groupRating(d, id)+int(b.Points), int(b.Karma)) + spec(b)
 	}
 	for _, b := range d.Skills.Groups {
 		groups += int(b.Points)
@@ -174,8 +177,7 @@ func (s *System) strictSkills(d *sheet, c *calc) []rules.Violation {
 			vs = append(vs, violation(s.skillLayer(id, b), "skills.aboveMax",
 				map[string]any{"skill": id, "value": ratings[id], "max": limit}))
 		}
-		// Sem despertar (fatia 4.3), toda perícia mágica ou de ressonância é restrita.
-		if sk.Restricted {
+		if sk.Restricted && !s.restrictedAllowed(d, id) {
 			vs = append(vs, violation("skills.active."+id, "skills.restricted", map[string]any{"skill": id}))
 		}
 	}

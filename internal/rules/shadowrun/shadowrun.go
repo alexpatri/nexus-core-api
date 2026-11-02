@@ -23,7 +23,9 @@ var Codes = []string{
 	"key.duplicate", "qualities.levelOutOfRange", "qualities.optionRequired", "qualities.choiceRequired",
 	"qualities.choiceNotAllowed", "qualities.duplicate", "qualities.unique", "qualities.requirementNotMet",
 	"skills.aboveMax", "skills.restricted", "skills.groupConflict", "skills.specializationNotAllowed",
-	"skills.nativeLanguageCount",
+	"skills.nativeLanguageCount", "magic.notAtPriority", "magic.notAllowed", "magic.freeSkillsCount",
+	"magic.freeSkillNotAllowed", "magic.formulasMax", "magic.complexFormsMax", "magic.powerLevelMax",
+	"magic.parameterRequired", "magic.parameterNotAllowed", "magic.spiritsMax",
 }
 
 // Atributos que a ficha compra, na ordem de attributes.json.
@@ -45,6 +47,11 @@ type System struct {
 	knowledge map[string]string
 	// Ids que o choice de uma qualidade pode apontar, pelo ponteiro do catálogo.
 	choices map[string][]string
+	// Atributo de cada despertar (mag ou res).
+	awakenings map[string]string
+	powers     map[string]adeptPower
+	// Ids de cada catálogo de magia que o Lenient confere.
+	magicIDs map[string][]string
 }
 
 type metatype struct {
@@ -73,12 +80,36 @@ type priorityRow struct {
 		Metatype      string `json:"metatype"`
 		SpecialPoints int    `json:"specialPoints"`
 	} `json:"metatype"`
-	Attributes int `json:"attributes"`
+	Attributes int          `json:"attributes"`
+	Magic      []magicEntry `json:"magic"`
 	Skills     struct {
 		Points      int `json:"points"`
 		GroupPoints int `json:"groupPoints"`
 	} `json:"skills"`
 	Resources int `json:"resources"`
+}
+
+// O que uma letra da coluna Magia ou Ressonância dá a um despertar.
+type magicEntry struct {
+	Awakening string `json:"awakening"`
+	Attribute struct {
+		ID    string `json:"id"`
+		Value int    `json:"value"`
+	} `json:"attribute"`
+	Skills       *freeSkillRule `json:"skills"`
+	SkillGroups  *freeSkillRule `json:"skillGroups"`
+	Formulas     int            `json:"formulas"`
+	ComplexForms int            `json:"complexForms"`
+}
+
+type freeSkillRule struct {
+	Count  int `json:"count"`
+	Rating int `json:"rating"`
+	From   struct {
+		Attribute string   `json:"attribute"`
+		Groups    []string `json:"groups"`
+		Kind      string   `json:"kind"`
+	} `json:"from"`
 }
 
 type initiative struct {
@@ -91,9 +122,12 @@ type initiative struct {
 type mechanics struct {
 	Derived struct {
 		Initiative struct {
-			Physical initiative `json:"physical"`
-			MatrixAR initiative `json:"matrixAR"`
-			MaxDice  int        `json:"maxDice"`
+			Physical     initiative `json:"physical"`
+			Astral       initiative `json:"astral"`
+			MatrixAR     initiative `json:"matrixAR"`
+			MatrixVRCold initiative `json:"matrixVRCold"`
+			MatrixVRHot  initiative `json:"matrixVRHot"`
+			MaxDice      int        `json:"maxDice"`
 		} `json:"initiative"`
 		Limits struct {
 			Physical struct{ Value any } `json:"physical"`
@@ -120,6 +154,9 @@ type mechanics struct {
 			Walk any `json:"walk"`
 			Run  any `json:"run"`
 		} `json:"movement"`
+		LivingPersona struct {
+			DataProcessing any `json:"dataProcessing"`
+		} `json:"livingPersona"`
 		Reputation struct {
 			StreetCred      struct{ Value any } `json:"streetCred"`
 			Notoriety       struct{ Base int }  `json:"notoriety"`
@@ -140,6 +177,27 @@ type mechanics struct {
 		Contacts struct {
 			Karma any `json:"karma"`
 		} `json:"contacts"`
+		SpecialAttributeMax map[string]int `json:"specialAttributeMax"`
+		Purchases           struct {
+			Spell struct {
+				Karma int `json:"karma"`
+				Max   any `json:"max"`
+			} `json:"spell"`
+			ComplexForm struct {
+				Karma int `json:"karma"`
+				Max   any `json:"max"`
+			} `json:"complexForm"`
+			PowerPoint struct {
+				Karma int `json:"karma"`
+			} `json:"powerPoint"`
+			BoundSpiritService struct {
+				Karma      int `json:"karma"`
+				MaxSpirits any `json:"maxSpirits"`
+			} `json:"boundSpiritService"`
+			RegisteredSpriteTask struct {
+				Karma int `json:"karma"`
+			} `json:"registeredSpriteTask"`
+		} `json:"purchases"`
 	} `json:"creation"`
 	Progression struct {
 		Costs struct {
@@ -197,19 +255,39 @@ func New(catalogs fs.FS) (*System, error) {
 			} `json:"categories"`
 		} `json:"knowledge"`
 	}
+	var awakenings struct {
+		Awakenings []struct {
+			ID        string `json:"id"`
+			Attribute string `json:"attribute"`
+		} `json:"awakenings"`
+	}
+	var adept struct {
+		Powers []adeptPower `json:"powers"`
+	}
+	var forms struct {
+		ComplexForms []struct{ ID string } `json:"complexForms"`
+		SpriteTypes  []struct{ ID string } `json:"spriteTypes"`
+	}
+	var spells struct {
+		Spells  []struct{ ID string } `json:"spells"`
+		Rituals []struct{ ID string } `json:"rituals"`
+	}
 	var mentors struct {
 		Mentors []struct{ ID string } `json:"mentors"`
 	}
 	var traditions struct {
 		SpiritTypes []struct{ ID string } `json:"spiritTypes"`
+		Traditions  []struct{ ID string } `json:"traditions"`
 	}
 	s := &System{
 		metatypes: map[string]metatype{}, priorities: map[string]priorityRow{}, qualities: map[string]quality{},
 		skills: map[string]skill{}, groups: map[string][]string{}, knowledge: map[string]string{},
+		awakenings: map[string]string{}, powers: map[string]adeptPower{}, magicIDs: map[string][]string{},
 	}
 	for name, v := range map[string]any{
 		"system.json": &manifest, "metatypes.json": &metas, "priorities.json": &prios, "mechanics.json": &s.mech,
 		"qualities.json": &quals, "skills.json": &skillCat, "mentors.json": &mentors, "traditions.json": &traditions,
+		"awakening.json": &awakenings, "adept-powers.json": &adept, "complex-forms.json": &forms, "spells.json": &spells,
 	} {
 		if err := read(name, v); err != nil {
 			return nil, err
@@ -247,6 +325,27 @@ func New(catalogs fs.FS) (*System, error) {
 	for _, t := range traditions.SpiritTypes {
 		s.choices["traditions.json#spiritTypes"] = append(s.choices["traditions.json#spiritTypes"], t.ID)
 	}
+	for _, a := range awakenings.Awakenings {
+		s.awakenings[a.ID] = a.Attribute
+	}
+	for _, p := range adept.Powers {
+		s.powers[p.ID] = p
+	}
+	ids := func(xs []struct{ ID string }) []string {
+		out := make([]string, len(xs))
+		for i, x := range xs {
+			out[i] = x.ID
+		}
+		return out
+	}
+	s.magicIDs["traditions"] = ids(traditions.Traditions)
+	s.magicIDs["spiritTypes"] = ids(traditions.SpiritTypes)
+	s.magicIDs["spriteTypes"] = ids(forms.SpriteTypes)
+	s.magicIDs["complexForms"] = ids(forms.ComplexForms)
+	s.magicIDs["spells"] = ids(spells.Spells)
+	s.magicIDs["rituals"] = ids(spells.Rituals)
+	// Preparativo é a fórmula alquímica de um feitiço.
+	s.magicIDs["preparations"] = s.magicIDs["spells"]
 	if err := s.check(); err != nil {
 		return nil, fmt.Errorf("shadowrun: %w", err)
 	}
@@ -257,7 +356,8 @@ func New(catalogs fs.FS) (*System, error) {
 // fórmula malformada no catálogo derruba o boot.
 func (s *System) check() error {
 	if len(s.steps) == 0 || len(s.metatypes) == 0 || len(s.priorities) != 5 || len(s.qualities) == 0 ||
-		len(s.skills) == 0 || len(s.knowledge) == 0 {
+		len(s.skills) == 0 || len(s.knowledge) == 0 || len(s.awakenings) == 0 || len(s.powers) == 0 ||
+		len(s.magicIDs["spriteTypes"]) == 0 || s.mech.Creation.SpecialAttributeMax["mag"] == 0 {
 		return fmt.Errorf("catálogos incompletos")
 	}
 	env := expr.Env{"rating": 1, "karma.total": 0, "attr.ess": 6}
@@ -285,6 +385,9 @@ func (s *System) check() error {
 		"progression.knowledgeSkill": m.Progression.Costs.KnowledgeSkill,
 		"progression.languageSkill":  m.Progression.Costs.LanguageSkill,
 		"progression.specialization": m.Progression.Costs.Specialization,
+		"initiative.astral":          m.Derived.Initiative.Astral.Base,
+		"purchases.spell.max":        m.Creation.Purchases.Spell.Max,
+		"purchases.complexForm.max":  m.Creation.Purchases.ComplexForm.Max,
 	}
 	for id, f := range m.limits() {
 		formulas["limits."+id] = f
