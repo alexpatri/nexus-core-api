@@ -22,6 +22,18 @@ type sheet struct {
 	Skills     skillsData        `json:"skills"`
 	Magic      magicData         `json:"magic"`
 	Resources  resourcesData     `json:"resources"`
+	Contacts   []contact         `json:"contacts"`
+}
+
+type contact struct {
+	Key        string   `json:"key"`
+	Connection *float64 `json:"connection"`
+	Loyalty    *float64 `json:"loyalty"`
+}
+
+// ratings devolve Conexão e Lealdade; ausente vale 1.
+func (ct contact) ratings() (connection, loyalty int) {
+	return int(ratingOf(ct.Connection, nil)), int(ratingOf(ct.Loyalty, nil))
 }
 
 type qualityItem struct {
@@ -53,6 +65,8 @@ func stepOf(path string) string {
 		return "finishing"
 	case (strings.HasPrefix(path, "attributes.") || strings.HasPrefix(path, "skills.")) &&
 		strings.HasSuffix(path, ".karma"):
+		return "karma"
+	case strings.HasPrefix(path, "contacts"):
 		return "karma"
 	case strings.HasPrefix(path, "magic.spirits"), strings.HasPrefix(path, "magic.sprites"),
 		strings.HasPrefix(path, "magic.powerPointsKarma"):
@@ -436,6 +450,20 @@ func (s *System) lenient(data json.RawMessage) ([]rules.Violation, *sheet) {
 			s.lenientSkills(path, v, &vs, keys)
 		case "resources":
 			s.lenientResources(path, v, &vs, keys)
+		case "contacts":
+			list(path, v, &vs, keys, func(path string, m map[string]any) {
+				object(path, m, &vs, func(p, key string, v any) bool {
+					switch key {
+					case "key", "name", "notes":
+						expectString(p, v, &vs)
+					case "connection", "loyalty":
+						expectInteger(p, v, &vs)
+					default:
+						return false
+					}
+					return true
+				})
+			})
 		case "identity":
 			object(path, v, &vs, func(path, key string, v any) bool {
 				if !slices.Contains(identityFields, key) {
@@ -584,10 +612,11 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 	vs = append(vs, s.strictQualities(d, c)...)
 	vs = append(vs, s.strictSkills(d, c)...)
 	vs = append(vs, s.strictResources(d, c)...)
+	vs = append(vs, s.strictContacts(d)...)
 
 	for _, id := range sortedKeys(c.budgets) {
-		// Fórmulas e formas além das gratuitas são compradas com carma.
-		if id == "formulas" || id == "complexForms" {
+		// Fórmulas, formas e contatos além dos gratuitos são comprados com carma.
+		if id == "formulas" || id == "complexForms" || id == "contacts" {
 			continue
 		}
 		if b := c.budgets[id]; b.Spent > b.Total {

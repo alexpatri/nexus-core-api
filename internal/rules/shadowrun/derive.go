@@ -140,7 +140,7 @@ func (s *System) calc(d *sheet) *calc {
 	if known {
 		env := c.env()
 		c.budgets["knowledge"] = budget{Total: float64(eval(s.mech.Creation.Skills.KnowledgePoints, env)), Spent: float64(knowledgePoints)}
-		c.budgets["contacts"] = budget{Total: float64(eval(s.mech.Creation.Contacts.Karma, env))}
+		c.budgets["contacts"] = budget{Total: float64(eval(s.mech.Creation.Contacts.Karma, env)), Spent: float64(contactKarma(d))}
 	}
 
 	// Carma sobe degrau a degrau a partir do valor com os pontos. Sem metatipo,
@@ -164,6 +164,9 @@ func (s *System) calc(d *sheet) *calc {
 		for r := from + 1; r <= from+int(b.Karma); r++ {
 			karma += eval(s.mech.Progression.Costs.Attribute, expr.Env{"rating": float64(r)})
 		}
+	}
+	if ct, ok := c.budgets["contacts"]; ok {
+		karma += int(max(0, ct.Spent-ct.Total))
 	}
 	if priced {
 		c.budgets["karma"] = budget{Total: float64(s.mech.Creation.Karma + fx.negative), Spent: float64(karma)}
