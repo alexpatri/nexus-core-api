@@ -21,6 +21,7 @@ type quality struct {
 	Modifiers []qualityModifier   `json:"modifiers"`
 	Requires  *qualityRequirement `json:"requires"`
 	Unique    bool                `json:"unique"`
+	Excludes  []catalogRef        `json:"excludes"`
 }
 
 type qualityRequirement struct {
@@ -34,6 +35,7 @@ type qualityModifier struct {
 	Of    any `json:"of"`
 	Add   any `json:"add"`
 	Times any `json:"times"`
+	Mul   any `json:"mul"`
 }
 
 type qualityOption struct {
@@ -283,6 +285,11 @@ func (s *System) strictQualities(d *sheet, c *calc) []rules.Violation {
 			}
 			if r.Special != "" && c.natural[r.Special] <= 0 {
 				add(it, "", "qualities.requirementNotMet", map[string]any{"quality": q.ID, "requirement": r.Special})
+			}
+		}
+		for _, x := range q.Excludes {
+			if s.present(d, x) {
+				add(it, "", "qualities.excluded", map[string]any{"quality": q.ID, "with": x.ID})
 			}
 		}
 		key := q.ID + "\x00" + it.Choice

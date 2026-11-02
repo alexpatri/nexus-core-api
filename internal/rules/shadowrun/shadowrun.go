@@ -25,7 +25,12 @@ var Codes = []string{
 	"skills.aboveMax", "skills.restricted", "skills.groupConflict", "skills.specializationNotAllowed",
 	"skills.nativeLanguageCount", "magic.notAtPriority", "magic.notAllowed", "magic.freeSkillsCount",
 	"magic.freeSkillNotAllowed", "magic.formulasMax", "magic.complexFormsMax", "magic.powerLevelMax",
-	"magic.parameterRequired", "magic.parameterNotAllowed", "magic.spiritsMax",
+	"magic.parameterRequired", "magic.parameterNotAllowed", "magic.spiritsMax", "qualities.excluded",
+	"gear.availabilityMax", "gear.ratingOutOfRange", "gear.costOutOfRange", "gear.variantRequired",
+	"gear.parameterRequired", "gear.parameterNotAllowed", "gear.gradeNotAllowed", "gear.notInstallable",
+	"gear.hostRequired", "gear.excluded", "gear.duplicate", "gear.capacityExceeded", "gear.deviceRatingMax",
+	"gear.deckArrayInvalid", "resources.primaryLifestyleDuplicate", "resources.lifestyleNotAllowed",
+	"resources.startingRollOutOfRange", "essence.depleted",
 }
 
 // Atributos que a ficha compra, na ordem de attributes.json.
@@ -52,6 +57,7 @@ type System struct {
 	powers     map[string]adeptPower
 	// Ids de cada catálogo de magia que o Lenient confere.
 	magicIDs map[string][]string
+	gear     gearCatalogs
 }
 
 type metatype struct {
@@ -157,6 +163,10 @@ type mechanics struct {
 		LivingPersona struct {
 			DataProcessing any `json:"dataProcessing"`
 		} `json:"livingPersona"`
+		EssenceLoss struct {
+			Attributes []string `json:"attributes"`
+			Loss       any      `json:"loss"`
+		} `json:"essenceLoss"`
 		Reputation struct {
 			StreetCred      struct{ Value any } `json:"streetCred"`
 			Notoriety       struct{ Base int }  `json:"notoriety"`
@@ -178,7 +188,17 @@ type mechanics struct {
 			Karma any `json:"karma"`
 		} `json:"contacts"`
 		SpecialAttributeMax map[string]int `json:"specialAttributeMax"`
-		Purchases           struct {
+		Resources           struct {
+			KarmaToNuyen struct {
+				Rate     int `json:"rate"`
+				MaxKarma int `json:"maxKarma"`
+			} `json:"karmaToNuyen"`
+			NuyenCarryOver  int      `json:"nuyenCarryOver"`
+			MaxAvailability int      `json:"maxAvailability"`
+			MaxDeviceRating int      `json:"maxDeviceRating"`
+			Grades          []string `json:"grades"`
+		} `json:"resources"`
+		Purchases struct {
 			Spell struct {
 				Karma int `json:"karma"`
 				Max   any `json:"max"`
@@ -199,6 +219,9 @@ type mechanics struct {
 			} `json:"registeredSpriteTask"`
 		} `json:"purchases"`
 	} `json:"creation"`
+	Augmentation struct {
+		MaxAttributeBonus int `json:"maxAttributeBonus"`
+	} `json:"augmentation"`
 	Progression struct {
 		Costs struct {
 			Attribute      any `json:"attribute"`
@@ -293,6 +316,9 @@ func New(catalogs fs.FS) (*System, error) {
 			return nil, err
 		}
 	}
+	if err := s.loadGear(read); err != nil {
+		return nil, err
+	}
 	for _, st := range manifest.Creation.Steps {
 		s.steps = append(s.steps, st.ID)
 	}
@@ -357,10 +383,12 @@ func New(catalogs fs.FS) (*System, error) {
 func (s *System) check() error {
 	if len(s.steps) == 0 || len(s.metatypes) == 0 || len(s.priorities) != 5 || len(s.qualities) == 0 ||
 		len(s.skills) == 0 || len(s.knowledge) == 0 || len(s.awakenings) == 0 || len(s.powers) == 0 ||
-		len(s.magicIDs["spriteTypes"]) == 0 || s.mech.Creation.SpecialAttributeMax["mag"] == 0 {
+		len(s.magicIDs["spriteTypes"]) == 0 || s.mech.Creation.SpecialAttributeMax["mag"] == 0 ||
+		s.mech.Creation.Resources.MaxAvailability == 0 || s.mech.Augmentation.MaxAttributeBonus == 0 ||
+		len(s.mech.Derived.EssenceLoss.Attributes) == 0 {
 		return fmt.Errorf("catálogos incompletos")
 	}
-	env := expr.Env{"rating": 1, "karma.total": 0, "attr.ess": 6}
+	env := expr.Env{"rating": 1, "karma.total": 0, "attr.ess": 6, "essence.lost": 0.5}
 	for _, a := range append(baseAttrs, specialAttrs...) {
 		env["attr."+a] = 1
 	}
@@ -388,6 +416,7 @@ func (s *System) check() error {
 		"initiative.astral":          m.Derived.Initiative.Astral.Base,
 		"purchases.spell.max":        m.Creation.Purchases.Spell.Max,
 		"purchases.complexForm.max":  m.Creation.Purchases.ComplexForm.Max,
+		"essenceLoss.loss":           m.Derived.EssenceLoss.Loss,
 	}
 	for id, f := range m.limits() {
 		formulas["limits."+id] = f

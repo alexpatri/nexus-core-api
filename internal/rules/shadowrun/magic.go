@@ -61,6 +61,7 @@ type adeptPower struct {
 	Levels *struct {
 		Max int `json:"max"`
 	} `json:"levels"`
+	Modifiers []gearModifier `json:"modifiers"`
 }
 
 // cost em pontos de poder: fixo, por nível, por nível em tabela ou por sentido.

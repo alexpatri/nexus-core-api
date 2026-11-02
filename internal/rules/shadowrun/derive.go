@@ -34,6 +34,7 @@ type derived struct {
 	Lifting        map[string]float64       `json:"lifting,omitempty"`
 	Reputation     map[string]float64       `json:"reputation"`
 	Skills         *skillsOut               `json:"skills,omitempty"`
+	StartingNuyen  *float64                 `json:"startingNuyen,omitempty"`
 	Budgets        map[string]budget        `json:"budgets"`
 }
 
@@ -45,7 +46,11 @@ type attrOut struct {
 // calc é o que Strict, Derive e Summarize compartilham. O que não dá para
 // calcular com o data atual fica ausente.
 type calc struct {
-	natural            map[string]int
+	natural map[string]int
+	// augmented é o natural com os bônus de ampliações e poderes, até o teto.
+	augmented          map[string]int
+	loss               map[string]int
+	gear               gearOut
 	essence            *float64
 	metatypeAtPriority bool
 	budgets            map[string]budget
@@ -54,7 +59,7 @@ type calc struct {
 }
 
 func (s *System) calc(d *sheet) *calc {
-	c := &calc{natural: map[string]int{}, budgets: map[string]budget{}}
+	c := &calc{natural: map[string]int{}, augmented: map[string]int{}, loss: map[string]int{}, budgets: map[string]budget{}}
 	m, known := s.metatypes[d.Metatype]
 	eval := func(f any, env expr.Env) int {
 		v, err := expr.Eval(f, env)
@@ -79,9 +84,24 @@ func (s *System) calc(d *sheet) *calc {
 			c.natural[a] = base + int(b.Points) + int(b.Karma)
 		}
 	}
+	c.gear = s.gearCalc(d, c)
 	if known {
-		e := float64(m.Attributes["ess"].Start)
+		start := m.Attributes["ess"].Start * 1000
+		e := float64(start-c.gear.essence) / 1000
 		c.essence = &e
+		loss := eval(s.mech.Derived.EssenceLoss.Loss, expr.Env{"essence.lost": float64(c.gear.essence) / 1000})
+		for _, a := range s.mech.Derived.EssenceLoss.Attributes {
+			if v, ok := c.natural[a]; ok {
+				c.loss[a] = loss
+				c.natural[a] = max(0, v-loss)
+			}
+		}
+	}
+	for a, v := range c.natural {
+		c.augmented[a] = v
+		if slices.Contains(baseAttrs, a) {
+			c.augmented[a] += int(c.gear.bonus[a])
+		}
 	}
 
 	if row, ok := s.priorities[d.Priorities["metatype"]]; ok {
@@ -111,8 +131,11 @@ func (s *System) calc(d *sheet) *calc {
 	q := s.mech.Creation.Qualities
 	c.budgets["positiveQualities"] = budget{Total: float64(q.PositiveMax), Spent: float64(fx.positive)}
 	c.budgets["negativeQualities"] = budget{Total: float64(q.NegativeMax), Spent: float64(fx.negative)}
+	res := s.mech.Creation.Resources
+	k2n := d.Resources.KarmaToNuyen
 	if row, ok := s.priorities[d.Priorities["resources"]]; ok {
-		c.budgets["nuyen"] = budget{Total: float64(row.Resources)}
+		c.budgets["nuyen"] = budget{Total: float64(row.Resources) + k2n*float64(res.KarmaToNuyen.Rate), Spent: c.gear.nuyen}
+		c.budgets["karmaToNuyen"] = budget{Total: float64(res.KarmaToNuyen.MaxKarma), Spent: k2n}
 	}
 	if known {
 		env := c.env()
@@ -122,7 +145,7 @@ func (s *System) calc(d *sheet) *calc {
 
 	// Carma sobe degrau a degrau a partir do valor com os pontos. Sem metatipo,
 	// o degrau inicial dos atributos comuns é desconhecido e o orçamento some.
-	karma, priced := fx.positive+skillKarma+s.magicCosts(d, c), true
+	karma, priced := fx.positive+skillKarma+s.magicCosts(d, c)+int(k2n), true
 	for _, a := range slices.Concat(baseAttrs, specialAttrs) {
 		b := d.Attributes[a]
 		if b.Karma == 0 {
@@ -148,10 +171,10 @@ func (s *System) calc(d *sheet) *calc {
 	return c
 }
 
-// env tem attr.<id> com o valor ampliado; sem ampliações na fatia 4.1, é o natural.
+// env tem attr.<id> com o valor ampliado.
 func (c *calc) env() expr.Env {
 	env := expr.Env{"karma.total": 0}
-	for a, v := range c.natural {
+	for a, v := range c.augmented {
 		env["attr."+a] = float64(v)
 	}
 	if c.essence != nil {
@@ -186,24 +209,32 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 	if m, known := s.metatypes[d.Metatype]; known {
 		out.Attributes = map[string]attrOut{}
 		for a, v := range c.natural {
-			out.Attributes[a] = attrOut{Natural: v, Augmented: v}
+			out.Attributes[a] = attrOut{Natural: v, Augmented: c.augmented[a]}
 		}
 		out.Essence = c.essence
 		out.Limits = map[string]float64{}
 		for id, f := range s.mech.limits() {
-			out.Limits[id] = eval(f) + c.effects.limit[id]
+			out.Limits[id] = eval(f) + c.effects.limit[id] + c.gear.limit[id]
 		}
 		dice := func(n int) int { return min(n, mech.Initiative.MaxDice) }
 		out.Initiative = map[string]initiativeOut{
-			"physical": {Base: eval(mech.Initiative.Physical.Base), Dice: dice(mech.Initiative.Physical.Dice)},
+			"physical": {Base: eval(mech.Initiative.Physical.Base), Dice: dice(mech.Initiative.Physical.Dice + int(c.gear.dice))},
 			"matrixAR": {Base: eval(mech.Initiative.MatrixAR.Base), Dice: dice(mech.Initiative.MatrixAR.Dice)},
 		}
 		if s.hasAstralPerception(d) {
 			out.Initiative["astral"] = initiativeOut{Base: eval(mech.Initiative.Astral.Base), Dice: dice(mech.Initiative.Astral.Dice)}
 		}
-		// O tecnomante entra em RV com a persona viva, sem aparelho.
-		if d.Magic.Awakening == "technomancer" {
+		// O tecnomante entra em RV com a persona viva; os outros, com o primeiro ciberdeck.
+		vr := true
+		switch {
+		case d.Magic.Awakening == "technomancer":
 			env["matrix.dataProcessing"] = eval(mech.LivingPersona.DataProcessing)
+		case c.gear.deckDP != nil:
+			env["matrix.dataProcessing"] = *c.gear.deckDP
+		default:
+			vr = false
+		}
+		if vr {
 			out.Initiative["matrixVRCold"] = initiativeOut{Base: eval(mech.Initiative.MatrixVRCold.Base), Dice: dice(mech.Initiative.MatrixVRCold.Dice)}
 			out.Initiative["matrixVRHot"] = initiativeOut{Base: eval(mech.Initiative.MatrixVRHot.Base), Dice: dice(mech.Initiative.MatrixVRHot.Dice)}
 		}
@@ -213,14 +244,7 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 			"overflow":     eval(mech.Monitors.Overflow.Boxes) + c.effects.overflow,
 			"woundPenalty": 0,
 		}
-		armor := 0.0
-		for _, t := range m.Traits {
-			for _, mod := range t.Modifiers {
-				if mod.Target == "armor" {
-					armor += eval(mod.Add)
-				}
-			}
-		}
+		armor := c.gear.armor
 		out.Armor = &armor
 		out.AttributeTests = map[string]float64{}
 		for id, f := range s.mech.attributeTests() {
@@ -234,6 +258,13 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 		}
 	}
 	out.Skills = s.deriveSkills(d, c)
+	if n, ok := c.budgets["nuyen"]; ok && d.Resources.StartingNuyenRoll != nil {
+		if st := s.startingLifestyle(d); st != nil && st.StartingNuyen != nil {
+			left := min(float64(s.mech.Creation.Resources.NuyenCarryOver), max(0, n.Total-n.Spent))
+			v := *d.Resources.StartingNuyenRoll*float64(st.StartingNuyen.Multiplier) + left
+			out.StartingNuyen = &v
+		}
+	}
 	if c.err != nil {
 		return nil, c.err
 	}

@@ -21,6 +21,7 @@ type sheet struct {
 	Qualities  []qualityItem     `json:"qualities"`
 	Skills     skillsData        `json:"skills"`
 	Magic      magicData         `json:"magic"`
+	Resources  resourcesData     `json:"resources"`
 }
 
 type qualityItem struct {
@@ -433,6 +434,8 @@ func (s *System) lenient(data json.RawMessage) ([]rules.Violation, *sheet) {
 			s.lenientQualities(path, v, &vs, keys)
 		case "skills":
 			s.lenientSkills(path, v, &vs, keys)
+		case "resources":
+			s.lenientResources(path, v, &vs, keys)
 		case "identity":
 			object(path, v, &vs, func(path, key string, v any) bool {
 				if !slices.Contains(identityFields, key) {
@@ -526,8 +529,6 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 	if strings.TrimSpace(d.Identity["name"]) == "" {
 		vs = append(vs, required("identity.name"))
 	}
-	// resources entra na fatia 4.4; até lá, os dois sempre faltam.
-	vs = append(vs, required("resources.lifestyles"), required("resources.startingNuyenRoll"))
 
 	byLetter := map[string][]string{}
 	for _, col := range columns {
@@ -555,7 +556,7 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 			}
 			continue
 		}
-		limit := s.mech.Creation.SpecialAttributeMax[a] + c.effects.attrMax[a]
+		limit := s.mech.Creation.SpecialAttributeMax[a] + c.effects.attrMax[a] - c.loss[a]
 		if v := c.natural[a]; v > limit {
 			vs = append(vs, violation(layer(a, b), "attributes.aboveMax",
 				map[string]any{"attribute": a, "value": v, "max": limit}))
@@ -582,6 +583,7 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 	vs = append(vs, s.strictMagic(d, c)...)
 	vs = append(vs, s.strictQualities(d, c)...)
 	vs = append(vs, s.strictSkills(d, c)...)
+	vs = append(vs, s.strictResources(d, c)...)
 
 	for _, id := range sortedKeys(c.budgets) {
 		// Fórmulas e formas além das gratuitas são compradas com carma.
