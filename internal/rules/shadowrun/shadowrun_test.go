@@ -16,6 +16,7 @@ func catalogs(t *testing.T) fstest.MapFS {
 		"system.json", "metatypes.json", "priorities.json", "mechanics.json",
 		"qualities.json", "skills.json", "mentors.json", "traditions.json",
 		"awakening.json", "adept-powers.json", "complex-forms.json", "spells.json",
+		"lifestyles.json", "weapons.json", "armor.json", "augmentations.json", "matrix.json", "vehicles.json",
 	} {
 		raw, err := fs.ReadFile(data.Systems(), "shadowrun/5e/"+name)
 		if err != nil {

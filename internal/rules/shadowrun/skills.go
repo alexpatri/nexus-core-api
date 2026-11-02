@@ -124,7 +124,7 @@ func (s *System) skillCosts(d *sheet, c *calc, eval func(any, expr.Env) int) (po
 }
 
 func (c *calc) pool(attr string, rating int) *int {
-	v, ok := c.natural[attr]
+	v, ok := c.augmented[attr]
 	if !ok {
 		return nil
 	}
@@ -135,7 +135,7 @@ func (c *calc) pool(attr string, rating int) *int {
 func (s *System) deriveSkills(d *sheet, c *calc) *skillsOut {
 	out := skillsOut{Active: map[string]ratedOut{}, Knowledge: map[string]ratedOut{}, Languages: map[string]ratedOut{}}
 	for id, r := range s.activeRatings(d) {
-		out.Active[id] = ratedOut{Rating: r, Pool: c.pool(s.skills[id].Attribute, r)}
+		out.Active[id] = ratedOut{Rating: r, Pool: c.pool(s.skills[id].Attribute, r+int(c.gear.pool[id]))}
 	}
 	for _, k := range d.Skills.Knowledge {
 		if r := int(k.Points + k.Karma); r > 0 {
