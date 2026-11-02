@@ -30,7 +30,7 @@ var Codes = []string{
 	"gear.parameterRequired", "gear.parameterNotAllowed", "gear.gradeNotAllowed", "gear.notInstallable",
 	"gear.hostRequired", "gear.excluded", "gear.duplicate", "gear.capacityExceeded", "gear.deviceRatingMax",
 	"gear.deckArrayInvalid", "resources.primaryLifestyleDuplicate", "resources.lifestyleNotAllowed",
-	"resources.startingRollOutOfRange", "essence.depleted",
+	"resources.startingRollOutOfRange", "essence.depleted", "contacts.costOutOfRange", "contacts.ratingOutOfRange",
 }
 
 // Atributos que a ficha compra, na ordem de attributes.json.
@@ -185,7 +185,13 @@ type mechanics struct {
 			SpecializationCost int `json:"specializationCost"`
 		} `json:"skills"`
 		Contacts struct {
-			Karma any `json:"karma"`
+			Karma              any `json:"karma"`
+			MinConnection      int `json:"minConnection"`
+			MaxConnection      int `json:"maxConnection"`
+			MinLoyalty         int `json:"minLoyalty"`
+			MaxLoyalty         int `json:"maxLoyalty"`
+			MinKarma           int `json:"minKarma"`
+			MaxKarmaPerContact int `json:"maxKarmaPerContact"`
 		} `json:"contacts"`
 		SpecialAttributeMax map[string]int `json:"specialAttributeMax"`
 		Resources           struct {
@@ -384,7 +390,7 @@ func (s *System) check() error {
 	if len(s.steps) == 0 || len(s.metatypes) == 0 || len(s.priorities) != 5 || len(s.qualities) == 0 ||
 		len(s.skills) == 0 || len(s.knowledge) == 0 || len(s.awakenings) == 0 || len(s.powers) == 0 ||
 		len(s.magicIDs["spriteTypes"]) == 0 || s.mech.Creation.SpecialAttributeMax["mag"] == 0 ||
-		s.mech.Creation.Resources.MaxAvailability == 0 || s.mech.Augmentation.MaxAttributeBonus == 0 ||
+		s.mech.Creation.Resources.MaxAvailability == 0 || s.mech.Creation.Contacts.MaxLoyalty == 0 || s.mech.Augmentation.MaxAttributeBonus == 0 ||
 		len(s.mech.Derived.EssenceLoss.Attributes) == 0 {
 		return fmt.Errorf("catálogos incompletos")
 	}
