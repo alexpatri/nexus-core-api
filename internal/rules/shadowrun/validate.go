@@ -2,6 +2,7 @@ package shadowrun
 
 import (
 	"encoding/json"
+	"fmt"
 	"maps"
 	"math"
 	"slices"
@@ -17,6 +18,17 @@ type sheet struct {
 	Priorities map[string]string `json:"priorities"`
 	Metatype   string            `json:"metatype"`
 	Attributes map[string]buy    `json:"attributes"`
+	Qualities  []qualityItem     `json:"qualities"`
+	Skills     skillsData        `json:"skills"`
+}
+
+type qualityItem struct {
+	Key     string            `json:"key"`
+	ID      string            `json:"id"`
+	Rating  *float64          `json:"rating"`
+	Option  string            `json:"option"`
+	Options map[string]string `json:"options"`
+	Choice  string            `json:"choice"`
 }
 
 type buy struct {
@@ -37,8 +49,13 @@ func stepOf(path string) string {
 		return "concept"
 	case strings.HasPrefix(path, "identity"):
 		return "finishing"
-	case strings.HasPrefix(path, "attributes.") && strings.HasSuffix(path, ".karma"):
+	case (strings.HasPrefix(path, "attributes.") || strings.HasPrefix(path, "skills.")) &&
+		strings.HasSuffix(path, ".karma"):
 		return "karma"
+	case strings.HasPrefix(path, "qualities"):
+		return "qualities"
+	case strings.HasPrefix(path, "skills"):
+		return "skills"
 	case strings.HasPrefix(path, "priorities"), strings.HasPrefix(path, "metatype"),
 		strings.HasPrefix(path, "attributes"):
 		return "metatype"
@@ -89,6 +106,198 @@ func object(path string, v any, vs *[]rules.Violation, field func(path, key stri
 	}
 }
 
+// list confere uma lista de itens com key: cada item é objeto, tem key
+// string, e a key não se repete em nenhuma lista da ficha. item recebe o path
+// do item ("lista[key]") e o objeto.
+func list(path string, v any, vs *[]rules.Violation, keys map[string]bool, item func(path string, m map[string]any)) {
+	xs, ok := v.([]any)
+	if !ok {
+		*vs = append(*vs, shape(path, "array"))
+		return
+	}
+	for i, x := range xs {
+		m, ok := x.(map[string]any)
+		if !ok {
+			*vs = append(*vs, shape(fmt.Sprintf("%s[%d]", path, i), "object"))
+			continue
+		}
+		key, ok := m["key"].(string)
+		if !ok || key == "" {
+			*vs = append(*vs, shape(fmt.Sprintf("%s[%d].key", path, i), "string"))
+			continue
+		}
+		p := path + "[" + key + "]"
+		if keys[key] {
+			*vs = append(*vs, violation(p, "key.duplicate", map[string]any{"key": key}))
+		}
+		keys[key] = true
+		item(p, m)
+	}
+}
+
+func expectString(path string, v any, vs *[]rules.Violation) {
+	if _, ok := v.(string); !ok {
+		*vs = append(*vs, shape(path, "string"))
+	}
+}
+
+func expectInteger(path string, v any, vs *[]rules.Violation) {
+	if !isInteger(v) {
+		*vs = append(*vs, shape(path, "integer"))
+	}
+}
+
+func unknownID(path, catalog, id string) rules.Violation {
+	return violation(path, "catalog.unknownId", map[string]any{"catalog": catalog, "id": id})
+}
+
+func (s *System) lenientQualities(path string, v any, vs *[]rules.Violation, keys map[string]bool) {
+	list(path, v, vs, keys, func(path string, m map[string]any) {
+		id, _ := m["id"].(string)
+		q, known := s.qualities[id]
+		cost := q.cost()
+		object(path, m, vs, func(p, key string, v any) bool {
+			switch key {
+			case "key", "notes":
+				expectString(p, v, vs)
+			case "id":
+				if _, ok := v.(string); !ok {
+					*vs = append(*vs, shape(p, "string"))
+				} else if !known {
+					*vs = append(*vs, unknownID(p, "qualities", id))
+				}
+			case "rating":
+				expectInteger(p, v, vs)
+			case "choice":
+				expectString(p, v, vs)
+			case "option":
+				opt, ok := v.(string)
+				if !ok {
+					*vs = append(*vs, shape(p, "string"))
+				} else if known && cost.options != nil {
+					if _, found := optionKarma(cost.options, opt); !found {
+						*vs = append(*vs, unknownID(p, "qualityOptions", id+"."+opt))
+					}
+				}
+			case "options":
+				object(p, v, vs, func(p, group string, v any) bool {
+					opt, ok := v.(string)
+					if !ok {
+						*vs = append(*vs, shape(p, "string"))
+						return true
+					}
+					for _, g := range cost.sum {
+						if g.ID == group {
+							if _, found := optionKarma(g.Options, opt); !found {
+								*vs = append(*vs, unknownID(p, "qualityOptions", id+"."+opt))
+							}
+							return true
+						}
+					}
+					return !known
+				})
+			default:
+				return false
+			}
+			return true
+		})
+		if _, ok := m["id"]; !ok {
+			*vs = append(*vs, shape(path+".id", "string"))
+		}
+	})
+}
+
+// skillField confere pontos, carma e especialização, comuns a todo tipo de perícia.
+func skillField(p, key string, v any, vs *[]rules.Violation) bool {
+	switch key {
+	case "points", "karma":
+		expectInteger(p, v, vs)
+	case "specialization":
+		object(p, v, vs, func(p, key string, v any) bool {
+			switch key {
+			case "name":
+				expectString(p, v, vs)
+			case "paidWith":
+				if w, _ := v.(string); w != "points" && w != "karma" {
+					*vs = append(*vs, shape(p, "paidWith"))
+				}
+			default:
+				return false
+			}
+			return true
+		})
+	default:
+		return false
+	}
+	return true
+}
+
+func (s *System) lenientSkills(path string, v any, vs *[]rules.Violation, keys map[string]bool) {
+	object(path, v, vs, func(path, key string, v any) bool {
+		switch key {
+		case "active":
+			object(path, v, vs, func(p, id string, v any) bool {
+				if _, ok := s.skills[id]; !ok {
+					*vs = append(*vs, unknownID(p, "skills", id))
+				}
+				object(p, v, vs, func(p, key string, v any) bool { return skillField(p, key, v, vs) })
+				return true
+			})
+		case "groups":
+			object(path, v, vs, func(p, id string, v any) bool {
+				if _, ok := s.groups[id]; !ok {
+					*vs = append(*vs, unknownID(p, "skillGroups", id))
+				}
+				object(p, v, vs, func(p, key string, v any) bool {
+					if key != "points" && key != "karma" {
+						return false
+					}
+					expectInteger(p, v, vs)
+					return true
+				})
+				return true
+			})
+		case "knowledge":
+			list(path, v, vs, keys, func(path string, m map[string]any) {
+				object(path, m, vs, func(p, key string, v any) bool {
+					switch key {
+					case "key", "name":
+						expectString(p, v, vs)
+					case "category":
+						if c, ok := v.(string); !ok {
+							*vs = append(*vs, shape(p, "string"))
+						} else if _, known := s.knowledge[c]; !known {
+							*vs = append(*vs, unknownID(p, "knowledgeCategories", c))
+						}
+					default:
+						return skillField(p, key, v, vs)
+					}
+					return true
+				})
+			})
+		case "languages":
+			list(path, v, vs, keys, func(path string, m map[string]any) {
+				object(path, m, vs, func(p, key string, v any) bool {
+					switch key {
+					case "key", "name":
+						expectString(p, v, vs)
+					case "native":
+						if _, ok := v.(bool); !ok {
+							*vs = append(*vs, shape(p, "boolean"))
+						}
+					default:
+						return skillField(p, key, v, vs)
+					}
+					return true
+				})
+			})
+		default:
+			return false
+		}
+		return true
+	})
+}
+
 func isInteger(v any) bool {
 	n, ok := v.(float64)
 	return ok && n >= 0 && n == math.Trunc(n)
@@ -102,8 +311,13 @@ func (s *System) lenient(data json.RawMessage) ([]rules.Violation, *sheet) {
 		return []rules.Violation{shape("", "object")}, nil
 	}
 	var vs []rules.Violation
+	keys := map[string]bool{}
 	object("", root, &vs, func(path, key string, v any) bool {
 		switch key {
+		case "qualities":
+			s.lenientQualities(path, v, &vs, keys)
+		case "skills":
+			s.lenientSkills(path, v, &vs, keys)
 		case "identity":
 			object(path, v, &vs, func(path, key string, v any) bool {
 				if !slices.Contains(identityFields, key) {
@@ -226,7 +440,7 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 	if m, ok := s.metatypes[d.Metatype]; ok {
 		var atMax []string
 		for _, a := range slices.Concat(baseAttrs, []string{"edg"}) {
-			v, limit := c.natural[a], m.Attributes[a].Max
+			v, limit := c.natural[a], m.Attributes[a].Max+c.effects.attrMax[a]
 			if v > limit {
 				vs = append(vs, violation(layer(a, d.Attributes[a]), "attributes.aboveMax",
 					map[string]any{"attribute": a, "value": v, "max": limit}))
@@ -240,6 +454,9 @@ func (s *System) strict(d *sheet, c *calc) []rules.Violation {
 				map[string]any{"attributes": atMax, "allowed": 1}))
 		}
 	}
+
+	vs = append(vs, s.strictQualities(d, c)...)
+	vs = append(vs, s.strictSkills(d, c)...)
 
 	for _, id := range sortedKeys(c.budgets) {
 		if b := c.budgets[id]; b.Spent > b.Total {

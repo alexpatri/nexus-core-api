@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io/fs"
+	"maps"
+	"slices"
 
 	"rpg-nexus/api/core/internal/rules"
 	"rpg-nexus/api/core/internal/rules/expr"
@@ -18,6 +20,10 @@ var key = rules.Key{System: "shadowrun", Version: "5e"}
 var Codes = []string{
 	"shape.invalid", "catalog.unknownId", "required", "priorities.duplicate", "metatype.notAtPriority",
 	"attributes.aboveMax", "attributes.tooManyAtMax", "attributes.notAllowed", "budget.exceeded",
+	"key.duplicate", "qualities.levelOutOfRange", "qualities.optionRequired", "qualities.choiceRequired",
+	"qualities.choiceNotAllowed", "qualities.duplicate", "qualities.unique", "qualities.requirementNotMet",
+	"skills.aboveMax", "skills.restricted", "skills.groupConflict", "skills.specializationNotAllowed",
+	"skills.nativeLanguageCount",
 }
 
 // Atributos que a ficha compra, na ordem de attributes.json.
@@ -32,6 +38,13 @@ type System struct {
 	metatypes  map[string]metatype
 	priorities map[string]priorityRow
 	mech       mechanics
+	qualities  map[string]quality
+	skills     map[string]skill
+	groups     map[string][]string
+	// Atributo de cada categoria de conhecimento.
+	knowledge map[string]string
+	// Ids que o choice de uma qualidade pode apontar, pelo ponteiro do catálogo.
+	choices map[string][]string
 }
 
 type metatype struct {
@@ -114,9 +127,15 @@ type mechanics struct {
 		} `json:"reputation"`
 	} `json:"derived"`
 	Creation struct {
-		Karma  int `json:"karma"`
+		Karma     int `json:"karma"`
+		Qualities struct {
+			PositiveMax int `json:"positiveMax"`
+			NegativeMax int `json:"negativeMax"`
+		} `json:"qualities"`
 		Skills struct {
-			KnowledgePoints any `json:"knowledgePoints"`
+			KnowledgePoints    any `json:"knowledgePoints"`
+			MaxRating          int `json:"maxRating"`
+			SpecializationCost int `json:"specializationCost"`
 		} `json:"skills"`
 		Contacts struct {
 			Karma any `json:"karma"`
@@ -124,7 +143,12 @@ type mechanics struct {
 	} `json:"creation"`
 	Progression struct {
 		Costs struct {
-			Attribute any `json:"attribute"`
+			Attribute      any `json:"attribute"`
+			ActiveSkill    any `json:"activeSkill"`
+			SkillGroup     any `json:"skillGroup"`
+			KnowledgeSkill any `json:"knowledgeSkill"`
+			LanguageSkill  any `json:"languageSkill"`
+			Specialization any `json:"specialization"`
 		} `json:"costs"`
 	} `json:"progression"`
 }
@@ -157,9 +181,35 @@ func New(catalogs fs.FS) (*System, error) {
 	var prios struct {
 		Rows []priorityRow `json:"rows"`
 	}
-	s := &System{metatypes: map[string]metatype{}, priorities: map[string]priorityRow{}}
+	var quals struct {
+		Qualities []quality `json:"qualities"`
+	}
+	var skillCat struct {
+		Skills []skill `json:"skills"`
+		Groups []struct {
+			ID     string   `json:"id"`
+			Skills []string `json:"skills"`
+		} `json:"groups"`
+		Knowledge struct {
+			Categories []struct {
+				ID        string `json:"id"`
+				Attribute string `json:"attribute"`
+			} `json:"categories"`
+		} `json:"knowledge"`
+	}
+	var mentors struct {
+		Mentors []struct{ ID string } `json:"mentors"`
+	}
+	var traditions struct {
+		SpiritTypes []struct{ ID string } `json:"spiritTypes"`
+	}
+	s := &System{
+		metatypes: map[string]metatype{}, priorities: map[string]priorityRow{}, qualities: map[string]quality{},
+		skills: map[string]skill{}, groups: map[string][]string{}, knowledge: map[string]string{},
+	}
 	for name, v := range map[string]any{
 		"system.json": &manifest, "metatypes.json": &metas, "priorities.json": &prios, "mechanics.json": &s.mech,
+		"qualities.json": &quals, "skills.json": &skillCat, "mentors.json": &mentors, "traditions.json": &traditions,
 	} {
 		if err := read(name, v); err != nil {
 			return nil, err
@@ -174,6 +224,29 @@ func New(catalogs fs.FS) (*System, error) {
 	for _, r := range prios.Rows {
 		s.priorities[r.Priority] = r
 	}
+	for _, q := range quals.Qualities {
+		s.qualities[q.ID] = q
+	}
+	for _, sk := range skillCat.Skills {
+		s.skills[sk.ID] = sk
+	}
+	for _, g := range skillCat.Groups {
+		s.groups[g.ID] = g.Skills
+	}
+	for _, k := range skillCat.Knowledge.Categories {
+		s.knowledge[k.ID] = k.Attribute
+	}
+	s.choices = map[string][]string{
+		"skill":     slices.Sorted(maps.Keys(s.skills)),
+		"attribute": slices.Concat(baseAttrs, []string{"ess"}, specialAttrs),
+		"limit":     {"physical", "mental", "social"},
+	}
+	for _, m := range mentors.Mentors {
+		s.choices["mentors.json#mentors"] = append(s.choices["mentors.json#mentors"], m.ID)
+	}
+	for _, t := range traditions.SpiritTypes {
+		s.choices["traditions.json#spiritTypes"] = append(s.choices["traditions.json#spiritTypes"], t.ID)
+	}
 	if err := s.check(); err != nil {
 		return nil, fmt.Errorf("shadowrun: %w", err)
 	}
@@ -183,7 +256,8 @@ func New(catalogs fs.FS) (*System, error) {
 // check avalia toda fórmula usada com um ambiente completo: ref faltando ou
 // fórmula malformada no catálogo derruba o boot.
 func (s *System) check() error {
-	if len(s.steps) == 0 || len(s.metatypes) == 0 || len(s.priorities) != 5 {
+	if len(s.steps) == 0 || len(s.metatypes) == 0 || len(s.priorities) != 5 || len(s.qualities) == 0 ||
+		len(s.skills) == 0 || len(s.knowledge) == 0 {
 		return fmt.Errorf("catálogos incompletos")
 	}
 	env := expr.Env{"rating": 1, "karma.total": 0, "attr.ess": 6}
@@ -192,20 +266,25 @@ func (s *System) check() error {
 	}
 	m := &s.mech
 	formulas := map[string]any{
-		"initiative.physical":      m.Derived.Initiative.Physical.Base,
-		"initiative.matrixAR":      m.Derived.Initiative.MatrixAR.Base,
-		"monitors.physical":        m.Derived.Monitors.Physical.Boxes,
-		"monitors.stun":            m.Derived.Monitors.Stun.Boxes,
-		"monitors.overflow":        m.Derived.Monitors.Overflow.Boxes,
-		"lifting.lift":             m.Derived.Lifting.Lift,
-		"lifting.overhead":         m.Derived.Lifting.Overhead,
-		"lifting.carry":            m.Derived.Lifting.Carry,
-		"movement.walk":            m.Derived.Movement.Walk,
-		"movement.run":             m.Derived.Movement.Run,
-		"reputation.streetCred":    m.Derived.Reputation.StreetCred.Value,
-		"creation.knowledgePoints": m.Creation.Skills.KnowledgePoints,
-		"creation.contacts":        m.Creation.Contacts.Karma,
-		"progression.attribute":    m.Progression.Costs.Attribute,
+		"initiative.physical":        m.Derived.Initiative.Physical.Base,
+		"initiative.matrixAR":        m.Derived.Initiative.MatrixAR.Base,
+		"monitors.physical":          m.Derived.Monitors.Physical.Boxes,
+		"monitors.stun":              m.Derived.Monitors.Stun.Boxes,
+		"monitors.overflow":          m.Derived.Monitors.Overflow.Boxes,
+		"lifting.lift":               m.Derived.Lifting.Lift,
+		"lifting.overhead":           m.Derived.Lifting.Overhead,
+		"lifting.carry":              m.Derived.Lifting.Carry,
+		"movement.walk":              m.Derived.Movement.Walk,
+		"movement.run":               m.Derived.Movement.Run,
+		"reputation.streetCred":      m.Derived.Reputation.StreetCred.Value,
+		"creation.knowledgePoints":   m.Creation.Skills.KnowledgePoints,
+		"creation.contacts":          m.Creation.Contacts.Karma,
+		"progression.attribute":      m.Progression.Costs.Attribute,
+		"progression.activeSkill":    m.Progression.Costs.ActiveSkill,
+		"progression.skillGroup":     m.Progression.Costs.SkillGroup,
+		"progression.knowledgeSkill": m.Progression.Costs.KnowledgeSkill,
+		"progression.languageSkill":  m.Progression.Costs.LanguageSkill,
+		"progression.specialization": m.Progression.Costs.Specialization,
 	}
 	for id, f := range m.limits() {
 		formulas["limits."+id] = f
