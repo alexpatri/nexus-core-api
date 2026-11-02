@@ -12,7 +12,10 @@ import (
 func catalogs(t *testing.T) fstest.MapFS {
 	t.Helper()
 	m := fstest.MapFS{}
-	for _, name := range []string{"system.json", "metatypes.json", "priorities.json", "mechanics.json"} {
+	for _, name := range []string{
+		"system.json", "metatypes.json", "priorities.json", "mechanics.json",
+		"qualities.json", "skills.json", "mentors.json", "traditions.json",
+	} {
 		raw, err := fs.ReadFile(data.Systems(), "shadowrun/5e/"+name)
 		if err != nil {
 			t.Fatal(err)

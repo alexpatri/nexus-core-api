@@ -32,6 +32,7 @@ type derived struct {
 	Movement       map[string]float64       `json:"movement,omitempty"`
 	Lifting        map[string]float64       `json:"lifting,omitempty"`
 	Reputation     map[string]float64       `json:"reputation"`
+	Skills         *skillsOut               `json:"skills,omitempty"`
 	Budgets        map[string]budget        `json:"budgets"`
 }
 
@@ -47,6 +48,7 @@ type calc struct {
 	essence            *float64
 	metatypeAtPriority bool
 	budgets            map[string]budget
+	effects            effects
 	err                error
 }
 
@@ -60,6 +62,9 @@ func (s *System) calc(d *sheet) *calc {
 		}
 		return int(v)
 	}
+
+	fx, err := s.qualityEffects(d)
+	c.effects, c.err = fx, err
 
 	if known {
 		for _, a := range slices.Concat(baseAttrs, []string{"edg"}) {
@@ -89,22 +94,26 @@ func (s *System) calc(d *sheet) *calc {
 		}
 		c.budgets["attributes"] = budget{Total: row.Attributes, Spent: spent}
 	}
+	skillPoints, groupPoints, knowledgePoints, skillKarma := s.skillCosts(d, c, eval)
 	if row, ok := s.priorities[d.Priorities["skills"]]; ok {
-		c.budgets["skills"] = budget{Total: row.Skills.Points}
-		c.budgets["skillGroups"] = budget{Total: row.Skills.GroupPoints}
+		c.budgets["skills"] = budget{Total: row.Skills.Points, Spent: skillPoints}
+		c.budgets["skillGroups"] = budget{Total: row.Skills.GroupPoints, Spent: groupPoints}
 	}
+	q := s.mech.Creation.Qualities
+	c.budgets["positiveQualities"] = budget{Total: q.PositiveMax, Spent: fx.positive}
+	c.budgets["negativeQualities"] = budget{Total: q.NegativeMax, Spent: fx.negative}
 	if row, ok := s.priorities[d.Priorities["resources"]]; ok {
 		c.budgets["nuyen"] = budget{Total: row.Resources}
 	}
 	if known {
 		env := c.env()
-		c.budgets["knowledge"] = budget{Total: eval(s.mech.Creation.Skills.KnowledgePoints, env)}
+		c.budgets["knowledge"] = budget{Total: eval(s.mech.Creation.Skills.KnowledgePoints, env), Spent: knowledgePoints}
 		c.budgets["contacts"] = budget{Total: eval(s.mech.Creation.Contacts.Karma, env)}
 	}
 
 	// Carma sobe degrau a degrau a partir do valor com os pontos. Sem metatipo,
 	// o degrau inicial dos atributos comuns é desconhecido e o orçamento some.
-	karma, priced := 0, true
+	karma, priced := fx.positive+skillKarma, true
 	for _, a := range slices.Concat(baseAttrs, specialAttrs) {
 		b := d.Attributes[a]
 		if b.Karma == 0 {
@@ -123,7 +132,7 @@ func (s *System) calc(d *sheet) *calc {
 		}
 	}
 	if priced {
-		c.budgets["karma"] = budget{Total: s.mech.Creation.Karma, Spent: karma}
+		c.budgets["karma"] = budget{Total: s.mech.Creation.Karma + fx.negative, Spent: karma}
 	}
 	return c
 }
@@ -159,7 +168,7 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 
 	out.Reputation = map[string]float64{
 		"streetCred":      eval(mech.Reputation.StreetCred.Value),
-		"notoriety":       float64(mech.Reputation.Notoriety.Base),
+		"notoriety":       max(0, float64(mech.Reputation.Notoriety.Base)+c.effects.notoriety),
 		"publicAwareness": float64(mech.Reputation.PublicAwareness.Base),
 	}
 
@@ -171,7 +180,7 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 		out.Essence = c.essence
 		out.Limits = map[string]float64{}
 		for id, f := range s.mech.limits() {
-			out.Limits[id] = eval(f)
+			out.Limits[id] = eval(f) + c.effects.limit[id]
 		}
 		dice := func(n int) int { return min(n, mech.Initiative.MaxDice) }
 		out.Initiative = map[string]initiativeOut{
@@ -181,7 +190,7 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 		out.Monitors = map[string]float64{
 			"physical":     eval(mech.Monitors.Physical.Boxes),
 			"stun":         eval(mech.Monitors.Stun.Boxes),
-			"overflow":     eval(mech.Monitors.Overflow.Boxes),
+			"overflow":     eval(mech.Monitors.Overflow.Boxes) + c.effects.overflow,
 			"woundPenalty": 0,
 		}
 		armor := 0.0
@@ -204,6 +213,7 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 			"lift": eval(mech.Lifting.Lift), "overhead": eval(mech.Lifting.Overhead), "carry": eval(mech.Lifting.Carry),
 		}
 	}
+	out.Skills = s.deriveSkills(d, c)
 	if c.err != nil {
 		return nil, c.err
 	}
