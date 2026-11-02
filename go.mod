@@ -3,7 +3,7 @@ module rpg-nexus/api/core
 go 1.25.0
 
 require (
-	github.com/alexpatri/nexus-systems-api v0.5.0
+	github.com/alexpatri/nexus-systems-api v0.6.0
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/gofiber/fiber/v3 v3.2.0
 	github.com/joho/godotenv v1.5.1
