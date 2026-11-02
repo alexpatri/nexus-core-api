@@ -11,9 +11,10 @@ import (
 	"rpg-nexus/api/core/internal/rules/expr"
 )
 
+// Número, e não inteiro: pontos de poder vêm em quartos.
 type budget struct {
-	Total int `json:"total"`
-	Spent int `json:"spent"`
+	Total float64 `json:"total"`
+	Spent float64 `json:"spent"`
 }
 
 type initiativeOut struct {
@@ -71,6 +72,14 @@ func (s *System) calc(d *sheet) *calc {
 			b := d.Attributes[a]
 			c.natural[a] = m.Attributes[a].Min + int(b.Points) + int(b.Karma)
 		}
+	}
+	for _, a := range []string{"mag", "res"} {
+		if base, awakened := s.specialBase(d, a); awakened {
+			b := d.Attributes[a]
+			c.natural[a] = base + int(b.Points) + int(b.Karma)
+		}
+	}
+	if known {
 		e := float64(m.Attributes["ess"].Start)
 		c.essence = &e
 	}
@@ -83,7 +92,7 @@ func (s *System) calc(d *sheet) *calc {
 				for _, a := range specialAttrs {
 					spent += int(d.Attributes[a].Points)
 				}
-				c.budgets["special"] = budget{Total: opt.SpecialPoints, Spent: spent}
+				c.budgets["special"] = budget{Total: float64(opt.SpecialPoints), Spent: float64(spent)}
 			}
 		}
 	}
@@ -92,35 +101,37 @@ func (s *System) calc(d *sheet) *calc {
 		for _, a := range baseAttrs {
 			spent += int(d.Attributes[a].Points)
 		}
-		c.budgets["attributes"] = budget{Total: row.Attributes, Spent: spent}
+		c.budgets["attributes"] = budget{Total: float64(row.Attributes), Spent: float64(spent)}
 	}
 	skillPoints, groupPoints, knowledgePoints, skillKarma := s.skillCosts(d, c, eval)
 	if row, ok := s.priorities[d.Priorities["skills"]]; ok {
-		c.budgets["skills"] = budget{Total: row.Skills.Points, Spent: skillPoints}
-		c.budgets["skillGroups"] = budget{Total: row.Skills.GroupPoints, Spent: groupPoints}
+		c.budgets["skills"] = budget{Total: float64(row.Skills.Points), Spent: float64(skillPoints)}
+		c.budgets["skillGroups"] = budget{Total: float64(row.Skills.GroupPoints), Spent: float64(groupPoints)}
 	}
 	q := s.mech.Creation.Qualities
-	c.budgets["positiveQualities"] = budget{Total: q.PositiveMax, Spent: fx.positive}
-	c.budgets["negativeQualities"] = budget{Total: q.NegativeMax, Spent: fx.negative}
+	c.budgets["positiveQualities"] = budget{Total: float64(q.PositiveMax), Spent: float64(fx.positive)}
+	c.budgets["negativeQualities"] = budget{Total: float64(q.NegativeMax), Spent: float64(fx.negative)}
 	if row, ok := s.priorities[d.Priorities["resources"]]; ok {
-		c.budgets["nuyen"] = budget{Total: row.Resources}
+		c.budgets["nuyen"] = budget{Total: float64(row.Resources)}
 	}
 	if known {
 		env := c.env()
-		c.budgets["knowledge"] = budget{Total: eval(s.mech.Creation.Skills.KnowledgePoints, env), Spent: knowledgePoints}
-		c.budgets["contacts"] = budget{Total: eval(s.mech.Creation.Contacts.Karma, env)}
+		c.budgets["knowledge"] = budget{Total: float64(eval(s.mech.Creation.Skills.KnowledgePoints, env)), Spent: float64(knowledgePoints)}
+		c.budgets["contacts"] = budget{Total: float64(eval(s.mech.Creation.Contacts.Karma, env))}
 	}
 
 	// Carma sobe degrau a degrau a partir do valor com os pontos. Sem metatipo,
 	// o degrau inicial dos atributos comuns é desconhecido e o orçamento some.
-	karma, priced := fx.positive+skillKarma, true
+	karma, priced := fx.positive+skillKarma+s.magicCosts(d, c), true
 	for _, a := range slices.Concat(baseAttrs, specialAttrs) {
 		b := d.Attributes[a]
 		if b.Karma == 0 {
 			continue
 		}
 		from := int(b.Points)
-		if a != "mag" && a != "res" {
+		if base, awakened := s.specialBase(d, a); awakened {
+			from += base
+		} else if a != "mag" && a != "res" {
 			if !known {
 				priced = false
 				break
@@ -132,7 +143,7 @@ func (s *System) calc(d *sheet) *calc {
 		}
 	}
 	if priced {
-		c.budgets["karma"] = budget{Total: s.mech.Creation.Karma + fx.negative, Spent: karma}
+		c.budgets["karma"] = budget{Total: float64(s.mech.Creation.Karma + fx.negative), Spent: float64(karma)}
 	}
 	return c
 }
@@ -186,6 +197,15 @@ func (s *System) Derive(data json.RawMessage) (json.RawMessage, error) {
 		out.Initiative = map[string]initiativeOut{
 			"physical": {Base: eval(mech.Initiative.Physical.Base), Dice: dice(mech.Initiative.Physical.Dice)},
 			"matrixAR": {Base: eval(mech.Initiative.MatrixAR.Base), Dice: dice(mech.Initiative.MatrixAR.Dice)},
+		}
+		if s.hasAstralPerception(d) {
+			out.Initiative["astral"] = initiativeOut{Base: eval(mech.Initiative.Astral.Base), Dice: dice(mech.Initiative.Astral.Dice)}
+		}
+		// O tecnomante entra em RV com a persona viva, sem aparelho.
+		if d.Magic.Awakening == "technomancer" {
+			env["matrix.dataProcessing"] = eval(mech.LivingPersona.DataProcessing)
+			out.Initiative["matrixVRCold"] = initiativeOut{Base: eval(mech.Initiative.MatrixVRCold.Base), Dice: dice(mech.Initiative.MatrixVRCold.Dice)}
+			out.Initiative["matrixVRHot"] = initiativeOut{Base: eval(mech.Initiative.MatrixVRHot.Base), Dice: dice(mech.Initiative.MatrixVRHot.Dice)}
 		}
 		out.Monitors = map[string]float64{
 			"physical":     eval(mech.Monitors.Physical.Boxes),
@@ -252,7 +272,7 @@ func (s *System) Summarize(data json.RawMessage) (rules.Summary, error) {
 		sum.Highlights = append(sum.Highlights, rules.Highlight{Label: "Essência", Value: number(*c.essence)})
 	}
 	if k, ok := c.budgets["karma"]; ok {
-		sum.Highlights = append(sum.Highlights, rules.Highlight{Label: "Carma", Value: number(float64(k.Total - k.Spent))})
+		sum.Highlights = append(sum.Highlights, rules.Highlight{Label: "Carma", Value: number(k.Total - k.Spent)})
 	}
 
 	// Progresso é o primeiro passo que ainda falta, calculado de data.
