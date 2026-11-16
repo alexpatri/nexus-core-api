@@ -40,6 +40,8 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  cfg.CORS.Origins,
 		ExposeHeaders: []string{fiber.HeaderRetryAfter, fiber.HeaderETag},
+		// O Chrome não guarda preflight por mais de 2 h.
+		MaxAge: 7200,
 	}))
 
 	userSvc := handlers.NewUserHandler(userRepo, sessionRepo, cfg.Auth.SessionTTL)
