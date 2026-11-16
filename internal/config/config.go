@@ -42,6 +42,10 @@ func (d DatabaseConfig) URI() string {
 
 type ServerConfig struct {
 	Port string `env:"PORT" envDefault:"8080"`
+	// Cabeçalho com o IP do cliente, posto pelo proxy da frente. Vazio, o IP é
+	// o da conexão; definido, só vale quando a conexão vem de rede privada ou
+	// loopback, para um cliente direto não forjar o próprio IP.
+	ProxyHeader string `env:"PROXY_HEADER"`
 }
 
 type AuthConfig struct {

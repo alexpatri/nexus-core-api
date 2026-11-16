@@ -36,7 +36,7 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 		return nil, err
 	}
 
-	app := fiber.New(fiber.Config{ErrorHandler: errorHandler})
+	app := fiber.New(serverConfig(cfg.Server))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  cfg.CORS.Origins,
 		ExposeHeaders: []string{fiber.HeaderRetryAfter, fiber.HeaderETag},
@@ -74,6 +74,16 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 	sheets.Post("/:id/finalize", charSvc.FinalizeSheetHandler)
 
 	return app, nil
+}
+
+func serverConfig(cfg config.ServerConfig) fiber.Config {
+	return fiber.Config{
+		ErrorHandler:       errorHandler,
+		ProxyHeader:        cfg.ProxyHeader,
+		TrustProxy:         cfg.ProxyHeader != "",
+		TrustProxyConfig:   fiber.TrustProxyConfig{Private: true, Loopback: true},
+		EnableIPValidation: true,
+	}
 }
 
 func errorHandler(c fiber.Ctx, err error) error {
