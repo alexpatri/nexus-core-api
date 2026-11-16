@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -30,14 +31,11 @@ func (d DatabaseConfig) URI() string {
 		host = fmt.Sprintf("%s:%s", d.Host, d.Port)
 	}
 
-	uri := fmt.Sprintf("%s://%s/", d.Driver, host)
+	u := url.URL{Scheme: d.Driver, Host: host, Path: "/", RawQuery: d.Params}
 	if d.User != "" {
-		uri = fmt.Sprintf("%s://%s:%s@%s/", d.Driver, d.User, d.Password, host)
+		u.User = url.UserPassword(d.User, d.Password)
 	}
-	if d.Params != "" {
-		uri += "?" + d.Params
-	}
-	return uri
+	return u.String()
 }
 
 type ServerConfig struct {
