@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log"
 	"time"
 
 	"rpg-nexus/api/core/internal/models"
@@ -48,14 +49,12 @@ type sheetDoc struct {
 }
 
 type Character struct {
-	client     *mongo.Client
 	characters *mongo.Collection
 	sheets     *mongo.Collection
 }
 
 func NewCharacter(db *mongo.Database) *Character {
 	return &Character{
-		client:     db.Client(),
 		characters: db.Collection("characters"),
 		sheets:     db.Collection("sheets"),
 	}
@@ -87,18 +86,32 @@ func (r *Character) EnsureIndexes(ctx context.Context) error {
 	return err
 }
 
+// Create grava a ficha antes do personagem: se o personagem falhar, a ficha
+// que sobrar não aparece em listagem nenhuma, porque o List parte de characters.
 func (r *Character) Create(ctx context.Context, c models.Character, s models.Sheet) error {
 	sd, err := toSheetDoc(s)
 	if err != nil {
 		return err
 	}
-	return r.transaction(ctx, func(ctx mongo.SessionContext) error {
-		if _, err := r.characters.InsertOne(ctx, toCharacterDoc(c)); err != nil {
-			return err
-		}
-		_, err := r.sheets.InsertOne(ctx, sd)
-		return err
-	})
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	if _, err := r.sheets.InsertOne(ctx, sd); err != nil {
+		return translateErr(err)
+	}
+	if _, err := r.characters.InsertOne(ctx, toCharacterDoc(c)); err != nil {
+		r.discardSheet(ctx, sd.ID)
+		return translateErr(err)
+	}
+	return nil
+}
+
+func (r *Character) discardSheet(ctx context.Context, id primitive.ObjectID) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	if _, err := r.sheets.DeleteOne(ctx, bson.M{"_id": id}); err != nil {
+		log.Printf("ficha %s ficou sem personagem: %v", id.Hex(), err)
+	}
 }
 
 func (r *Character) List(ctx context.Context, owner primitive.ObjectID, system string) ([]models.CharacterListItem, error) {
@@ -185,63 +198,60 @@ func (r *Character) UpdateSheet(ctx context.Context, s models.Sheet, expected in
 		set["finalizedAt"] = sd.FinalizedAt
 	}
 
-	return r.transaction(ctx, func(ctx mongo.SessionContext) error {
-		res, err := r.sheets.UpdateOne(ctx,
-			bson.M{"_id": sd.ID, "ownerId": sd.OwnerID, "revision": expected},
-			bson.M{"$set": set, "$inc": bson.M{"revision": 1}},
-		)
-		if err != nil {
-			return err
-		}
-		if res.MatchedCount == 0 {
-			n, err := r.sheets.CountDocuments(ctx, bson.M{"_id": sd.ID, "ownerId": sd.OwnerID})
-			if err != nil {
-				return err
-			}
-			if n == 0 {
-				return ErrNotFound
-			}
-			return ErrConflict
-		}
-		if sd.CampaignID != nil {
-			return nil
-		}
-		_, err = r.characters.UpdateByID(ctx, sd.CharacterID, bson.M{"$set": bson.M{
-			"name":      name,
-			"updatedAt": sd.UpdatedAt,
-		}})
-		return err
-	})
-}
-
-func (r *Character) Delete(ctx context.Context, owner, id primitive.ObjectID) error {
-	return r.transaction(ctx, func(ctx mongo.SessionContext) error {
-		res, err := r.characters.DeleteOne(ctx, bson.M{"_id": id, "ownerId": owner})
-		if err != nil {
-			return err
-		}
-		if res.DeletedCount == 0 {
-			return ErrNotFound
-		}
-		_, err = r.sheets.DeleteMany(ctx, bson.M{"characterId": id, "ownerId": owner})
-		return err
-	})
-}
-
-func (r *Character) transaction(ctx context.Context, fn func(mongo.SessionContext) error) error {
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	sess, err := r.client.StartSession()
+	res, err := r.sheets.UpdateOne(ctx,
+		bson.M{"_id": sd.ID, "ownerId": sd.OwnerID, "revision": expected},
+		bson.M{"$set": set, "$inc": bson.M{"revision": 1}},
+	)
 	if err != nil {
-		return err
+		return translateErr(err)
 	}
-	defer sess.EndSession(ctx)
+	if res.MatchedCount == 0 {
+		n, err := r.sheets.CountDocuments(ctx, bson.M{"_id": sd.ID, "ownerId": sd.OwnerID})
+		if err != nil {
+			return translateErr(err)
+		}
+		if n == 0 {
+			return ErrNotFound
+		}
+		return ErrConflict
+	}
+	if sd.CampaignID != nil {
+		return nil
+	}
 
-	_, err = sess.WithTransaction(ctx, func(ctx mongo.SessionContext) (any, error) {
-		return nil, fn(ctx)
-	})
-	return translateErr(err)
+	// A ficha já está salva com a revisão nova. Devolver erro faria o app
+	// reenviar com a revisão velha e cair em 409; o nome é só uma cópia do
+	// resumo, e o próximo salvamento o regrava.
+	_, err = r.characters.UpdateByID(ctx, sd.CharacterID, bson.M{"$set": bson.M{
+		"name":      name,
+		"updatedAt": sd.UpdatedAt,
+	}})
+	if err != nil {
+		log.Printf("personagem %s ficou com o nome antigo: %v", sd.CharacterID.Hex(), err)
+	}
+	return nil
+}
+
+// Delete apaga o personagem antes das fichas: ele some da lista na hora, e
+// fichas que sobrarem não aparecem em listagem nenhuma.
+func (r *Character) Delete(ctx context.Context, owner, id primitive.ObjectID) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+
+	res, err := r.characters.DeleteOne(ctx, bson.M{"_id": id, "ownerId": owner})
+	if err != nil {
+		return translateErr(err)
+	}
+	if res.DeletedCount == 0 {
+		return ErrNotFound
+	}
+	if _, err := r.sheets.DeleteMany(ctx, bson.M{"characterId": id, "ownerId": owner}); err != nil {
+		log.Printf("fichas do personagem %s ficaram sem dono: %v", id.Hex(), err)
+	}
+	return nil
 }
 
 func toCharacterDoc(c models.Character) characterDoc {

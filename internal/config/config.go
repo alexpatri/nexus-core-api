@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net/url"
 	"strings"
 	"time"
 
@@ -30,18 +31,19 @@ func (d DatabaseConfig) URI() string {
 		host = fmt.Sprintf("%s:%s", d.Host, d.Port)
 	}
 
-	uri := fmt.Sprintf("%s://%s/", d.Driver, host)
+	u := url.URL{Scheme: d.Driver, Host: host, Path: "/", RawQuery: d.Params}
 	if d.User != "" {
-		uri = fmt.Sprintf("%s://%s:%s@%s/", d.Driver, d.User, d.Password, host)
+		u.User = url.UserPassword(d.User, d.Password)
 	}
-	if d.Params != "" {
-		uri += "?" + d.Params
-	}
-	return uri
+	return u.String()
 }
 
 type ServerConfig struct {
 	Port string `env:"PORT" envDefault:"8080"`
+	// Cabeçalho com o IP do cliente, posto pelo proxy da frente. Vazio, o IP é
+	// o da conexão; definido, só vale quando a conexão vem de rede privada ou
+	// loopback, para um cliente direto não forjar o próprio IP.
+	ProxyHeader string `env:"PROXY_HEADER"`
 }
 
 type AuthConfig struct {

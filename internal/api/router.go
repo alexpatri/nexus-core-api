@@ -36,10 +36,12 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 		return nil, err
 	}
 
-	app := fiber.New(fiber.Config{ErrorHandler: errorHandler})
+	app := fiber.New(serverConfig(cfg.Server))
 	app.Use(cors.New(cors.Config{
 		AllowOrigins:  cfg.CORS.Origins,
 		ExposeHeaders: []string{fiber.HeaderRetryAfter, fiber.HeaderETag},
+		// O Chrome não guarda preflight por mais de 2 h.
+		MaxAge: 7200,
 	}))
 
 	userSvc := handlers.NewUserHandler(userRepo, sessionRepo, cfg.Auth.SessionTTL)
@@ -48,6 +50,10 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 	// Sessão por rota ou por prefixo, e não num grupo raiz: assim rota
 	// inexistente responde 404, e não 401.
 	session := auth.Middleware(sessionRepo, cfg.Auth.SessionTTL)
+
+	app.Get("/health", handlers.HealthHandler(func(ctx context.Context) error {
+		return db.Client().Ping(ctx, nil)
+	}))
 
 	app.Post("/auth/register", rateLimit(5, ipKey), userSvc.RegisterHandler)
 	app.Post("/auth/login", rateLimit(10, ipKey), rateLimit(5, emailKey), userSvc.LoginHandler)
@@ -70,6 +76,16 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 	sheets.Post("/:id/finalize", charSvc.FinalizeSheetHandler)
 
 	return app, nil
+}
+
+func serverConfig(cfg config.ServerConfig) fiber.Config {
+	return fiber.Config{
+		ErrorHandler:       errorHandler,
+		ProxyHeader:        cfg.ProxyHeader,
+		TrustProxy:         cfg.ProxyHeader != "",
+		TrustProxyConfig:   fiber.TrustProxyConfig{Private: true, Loopback: true},
+		EnableIPValidation: true,
+	}
 }
 
 func errorHandler(c fiber.Ctx, err error) error {

@@ -17,7 +17,7 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-// Precisa de um Mongo em replica set, como o do docker-compose:
+// Precisa de um Mongo, como o do docker-compose:
 // NEXUS_TEST_MONGO_URI="mongodb://localhost:27017/?directConnection=true" go test ./internal/repository
 func testDB(t *testing.T) *mongo.Database {
 	t.Helper()
@@ -133,7 +133,15 @@ func TestCharacterRepository(t *testing.T) {
 		t.Errorf("segunda ficha-base: %v", err)
 	}
 	if n, _ := db.Collection("characters").CountDocuments(ctx, bson.M{}); n != 1 {
-		t.Errorf("transação não desfez o personagem: %d personagens", n)
+		t.Errorf("personagem gravado sem ficha: %d personagens", n)
+	}
+
+	_, orphan := newPair(owner, `{}`)
+	if err := r.Create(ctx, c, orphan); !errors.Is(err, ErrDuplicate) {
+		t.Errorf("personagem repetido: %v", err)
+	}
+	if n, _ := db.Collection("sheets").CountDocuments(ctx, bson.M{"_id": orphan.ID}); n != 0 {
+		t.Errorf("ficha ficou sem personagem")
 	}
 
 	if err := r.Delete(ctx, primitive.NewObjectID(), c.ID); !errors.Is(err, ErrNotFound) {
