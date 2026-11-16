@@ -49,6 +49,10 @@ func NewApp(cfg *config.Config, db *mongo.Database, registry *rules.Registry) (*
 	// inexistente responde 404, e não 401.
 	session := auth.Middleware(sessionRepo, cfg.Auth.SessionTTL)
 
+	app.Get("/health", handlers.HealthHandler(func(ctx context.Context) error {
+		return db.Client().Ping(ctx, nil)
+	}))
+
 	app.Post("/auth/register", rateLimit(5, ipKey), userSvc.RegisterHandler)
 	app.Post("/auth/login", rateLimit(10, ipKey), rateLimit(5, emailKey), userSvc.LoginHandler)
 	app.Post("/auth/logout", session, userSvc.LogoutHandler)
